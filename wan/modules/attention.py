@@ -1,19 +1,16 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+import warnings
+
 import torch
 
 try:
-  import flash_attn_interface
+  import flash_attn_interface  # pyright: ignore[reportMissingImports]
   FLASH_ATTN_3_AVAILABLE = True
-except ModuleNotFoundError:
+except (ImportError, OSError) as exc:
+  warnings.warn(
+      f"FlashAttention 3 is unavailable ({exc}); falling back to PyTorch SDPA."
+  )
   FLASH_ATTN_3_AVAILABLE = False
-
-try:
-  import flash_attn
-  FLASH_ATTN_2_AVAILABLE = True
-except ModuleNotFoundError:
-  FLASH_ATTN_2_AVAILABLE = False
-
-import warnings
 
 __all__ = [
     'flash_attention',
@@ -108,23 +105,6 @@ def flash_attention(
         softmax_scale=softmax_scale,
         causal=causal,
         deterministic=deterministic)[0].unflatten(0, (b, lq))
-  else:
-    assert FLASH_ATTN_2_AVAILABLE
-    x = flash_attn.flash_attn_varlen_func(
-        q=q,
-        k=k,
-        v=v,
-        cu_seqlens_q=torch.cat([q_lens.new_zeros([1]), q_lens]).cumsum(
-            0, dtype=torch.int32).to(q.device, non_blocking=True),
-        cu_seqlens_k=torch.cat([k_lens.new_zeros([1]), k_lens]).cumsum(
-            0, dtype=torch.int32).to(q.device, non_blocking=True),
-        max_seqlen_q=lq,
-        max_seqlen_k=lk,
-        dropout_p=dropout_p,
-        softmax_scale=softmax_scale,
-        causal=causal,
-        window_size=window_size,
-        deterministic=deterministic).unflatten(0, (b, lq))
 
   # output
   return x.type(out_dtype)
@@ -145,7 +125,7 @@ def attention(
     dtype=torch.bfloat16,
     fa_version=None,
 ):
-  if FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE:
+  if FLASH_ATTN_3_AVAILABLE:
     return flash_attention(
         q=q,
         k=k,
