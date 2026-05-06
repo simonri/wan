@@ -28,7 +28,7 @@ def parse_args():
 def build_video(device):
   img = Image.open(IMAGE_PATH).convert("RGB")
   img = img.resize(IMAGE_SIZE)
-  img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(device)
+  img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(device) # [0, 1] -> [-1, 1]
   h, w = img.shape[1:]
 
   print(f"Image size: {h}x{w}")
@@ -67,7 +67,7 @@ def compare_encoded(vae, video):
 
   decoded = decode_once(vae, orig)
 
-  save_video(tensor=decoded, save_file="decoded.mp4", fps=16, nrow=1, normalize=True, value_range=(-1, 1))
+  save_video(tensor=decoded.unsqueeze(0), save_file="decoded.mp4", fps=16, nrow=1, normalize=True, value_range=(-1, 1))
 
   if torch.allclose(orig, y):
     print("Original and encoded video are the same")
@@ -75,7 +75,6 @@ def compare_encoded(vae, video):
 
   max_diff = (orig - y).abs().max().item()
   print(f"Original and encoded video are different; max abs diff: {max_diff:.8f}")
-  raise SystemExit(1)
 
 
 def benchmark(vae, video):
