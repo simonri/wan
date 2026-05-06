@@ -3,7 +3,7 @@ from easydict import EasyDict
 
 from .shared_config import wan_shared_cfg
 
-#------------------------ Wan TI2V 5B ------------------------#
+# ------------------------ Wan TI2V 5B ------------------------#
 
 ti2v_5B = EasyDict(__name__='Config: Wan TI2V 5B')
 ti2v_5B.update(wan_shared_cfg)

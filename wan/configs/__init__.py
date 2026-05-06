@@ -1,14 +1,14 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+from .wan_animate_14B import animate_14B
+from .wan_ti2v_5B import ti2v_5B
+from .wan_t2v_A14B import t2v_A14B
+from .wan_s2v_14B import s2v_14B
+from .wan_i2v_A14B import i2v_A14B
 import copy
 import os
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
-from .wan_i2v_A14B import i2v_A14B
-from .wan_s2v_14B import s2v_14B
-from .wan_t2v_A14B import t2v_A14B
-from .wan_ti2v_5B import ti2v_5B
-from .wan_animate_14B import animate_14B
 
 WAN_CONFIGS = {
     't2v-A14B': t2v_A14B,

@@ -2,7 +2,7 @@
 import torch
 from easydict import EasyDict
 
-#------------------------ Wan shared config ------------------------#
+# ------------------------ Wan shared config ------------------------#
 wan_shared_cfg = EasyDict()
 
 # t5

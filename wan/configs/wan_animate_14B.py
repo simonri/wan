@@ -3,7 +3,7 @@ from easydict import EasyDict
 
 from .shared_config import wan_shared_cfg
 
-#------------------------ Wan animate 14B ------------------------#
+# ------------------------ Wan animate 14B ------------------------#
 animate_14B = EasyDict(__name__='Config: Wan animate 14B')
 animate_14B.update(wan_shared_cfg)
 

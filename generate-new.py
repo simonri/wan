@@ -1,5 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-from wan.utils.utils import merge_video_audio, save_video, str2bool
+from wan.utils.utils import save_video, str2bool
 from wan.utils.prompt_extend import DashScopePromptExpander, QwenPromptExpander
 from wan.distributed.util import init_distributed_group
 from wan.configs import MAX_AREA_CONFIGS, SIZE_CONFIGS, SUPPORTED_SIZES, WAN_CONFIGS
@@ -19,39 +19,11 @@ warnings.filterwarnings('ignore')
 
 
 EXAMPLE_PROMPT = {
-    "t2v-A14B": {
-        "prompt":
-            "Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage.",
-    },
     "i2v-A14B": {
         "prompt":
             "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside.",
         "image":
             "examples/i2v_input.JPG",
-    },
-    "ti2v-5B": {
-        "prompt":
-            "Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage.",
-    },
-    "animate-14B": {
-        "prompt": "视频中的人在做动作",
-        "video": "",
-        "pose": "",
-        "mask": "",
-    },
-    "s2v-14B": {
-        "prompt":
-            "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside.",
-        "image":
-            "examples/i2v_input.JPG",
-        "audio":
-            "examples/talk.wav",
-        "tts_prompt_audio":
-            "examples/zero_shot_prompt.wav",
-        "tts_prompt_text":
-            "希望你以后能够做的比我还好呦。",
-        "tts_text":
-            "收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。"
     },
 }
 
@@ -93,10 +65,9 @@ def _validate_args(args):
   args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(
       0, sys.maxsize)
   # Size check
-  if not 's2v' in args.task:
-    assert args.size in SUPPORTED_SIZES[
-        args.
-        task], f"Unsupport size {args.size} for task {args.task}, supported sizes are: {', '.join(SUPPORTED_SIZES[args.task])}"
+  assert args.size in SUPPORTED_SIZES[
+      args.
+      task], f"Unsupport size {args.size} for task {args.task}, supported sizes are: {', '.join(SUPPORTED_SIZES[args.task])}"
 
 
 def _parse_args():
@@ -397,119 +368,6 @@ def generate(args):
     args.prompt = input_prompt[0]
     logging.info(f"Extended prompt: {args.prompt}")
 
-  if "t2v" in args.task:
-    logging.info("Creating WanT2V pipeline.")
-    wan_t2v = wan.WanT2V(
-        config=cfg,
-        checkpoint_dir=args.ckpt_dir,
-        device_id=device,
-        rank=rank,
-        t5_fsdp=args.t5_fsdp,
-        dit_fsdp=args.dit_fsdp,
-        use_sp=(args.ulysses_size > 1),
-        t5_cpu=args.t5_cpu,
-        convert_model_dtype=args.convert_model_dtype,
-    )
-
-    logging.info(f"Generating video ...")
-    video = wan_t2v.generate(
-        args.prompt,
-        size=SIZE_CONFIGS[args.size],
-        frame_num=args.frame_num,
-        shift=args.sample_shift,
-        sample_solver=args.sample_solver,
-        sampling_steps=args.sample_steps,
-        guide_scale=args.sample_guide_scale,
-        seed=args.base_seed,
-        offload_model=args.offload_model)
-  elif "ti2v" in args.task:
-    logging.info("Creating WanTI2V pipeline.")
-    wan_ti2v = wan.WanTI2V(
-        config=cfg,
-        checkpoint_dir=args.ckpt_dir,
-        device_id=device,
-        rank=rank,
-        t5_fsdp=args.t5_fsdp,
-        dit_fsdp=args.dit_fsdp,
-        use_sp=(args.ulysses_size > 1),
-        t5_cpu=args.t5_cpu,
-        convert_model_dtype=args.convert_model_dtype,
-    )
-
-    logging.info(f"Generating video ...")
-    video = wan_ti2v.generate(
-        args.prompt,
-        img=img,
-        size=SIZE_CONFIGS[args.size],
-        max_area=MAX_AREA_CONFIGS[args.size],
-        frame_num=args.frame_num,
-        shift=args.sample_shift,
-        sample_solver=args.sample_solver,
-        sampling_steps=args.sample_steps,
-        guide_scale=args.sample_guide_scale,
-        seed=args.base_seed,
-        offload_model=args.offload_model)
-  elif "animate" in args.task:
-    logging.info("Creating Wan-Animate pipeline.")
-    wan_animate = wan.WanAnimate(
-        config=cfg,
-        checkpoint_dir=args.ckpt_dir,
-        device_id=device,
-        rank=rank,
-        t5_fsdp=args.t5_fsdp,
-        dit_fsdp=args.dit_fsdp,
-        use_sp=(args.ulysses_size > 1),
-        t5_cpu=args.t5_cpu,
-        convert_model_dtype=args.convert_model_dtype,
-        use_relighting_lora=args.use_relighting_lora
-    )
-
-    logging.info(f"Generating video ...")
-    video = wan_animate.generate(
-        src_root_path=args.src_root_path,
-        replace_flag=args.replace_flag,
-        refert_num=args.refert_num,
-        clip_len=args.frame_num,
-        shift=args.sample_shift,
-        sample_solver=args.sample_solver,
-        sampling_steps=args.sample_steps,
-        guide_scale=args.sample_guide_scale,
-        seed=args.base_seed,
-        offload_model=args.offload_model)
-  elif "s2v" in args.task:
-    logging.info("Creating WanS2V pipeline.")
-    wan_s2v = wan.WanS2V(
-        config=cfg,
-        checkpoint_dir=args.ckpt_dir,
-        device_id=device,
-        rank=rank,
-        t5_fsdp=args.t5_fsdp,
-        dit_fsdp=args.dit_fsdp,
-        use_sp=(args.ulysses_size > 1),
-        t5_cpu=args.t5_cpu,
-        convert_model_dtype=args.convert_model_dtype,
-    )
-    logging.info(f"Generating video ...")
-    video = wan_s2v.generate(
-        input_prompt=args.prompt,
-        ref_image_path=args.image,
-        audio_path=args.audio,
-        enable_tts=args.enable_tts,
-        tts_prompt_audio=args.tts_prompt_audio,
-        tts_prompt_text=args.tts_prompt_text,
-        tts_text=args.tts_text,
-        num_repeat=args.num_clip,
-        pose_video=args.pose_video,
-        max_area=MAX_AREA_CONFIGS[args.size],
-        infer_frames=args.infer_frames,
-        shift=args.sample_shift,
-        sample_solver=args.sample_solver,
-        sampling_steps=args.sample_steps,
-        guide_scale=args.sample_guide_scale,
-        seed=args.base_seed,
-        offload_model=args.offload_model,
-        init_first_frame=args.start_from_ref,
-    )
   else:
     logging.info("Creating WanI2V pipeline.")
     wan_i2v = wan.WanI2V(
@@ -552,11 +410,6 @@ def generate(args):
         nrow=1,
         normalize=True,
         value_range=(-1, 1))
-    if "s2v" in args.task:
-      if args.enable_tts is False:
-        merge_video_audio(video_path=args.save_file, audio_path=args.audio)
-      else:
-        merge_video_audio(video_path=args.save_file, audio_path="tts.wav")
   del video
 
   torch.cuda.synchronize()

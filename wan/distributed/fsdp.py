@@ -20,26 +20,26 @@ def shard_model(
     sync_module_states=True,
     use_lora=False
 ):
-    model = FSDP(
-        module=model,
-        process_group=process_group,
-        sharding_strategy=sharding_strategy,
-        auto_wrap_policy=partial(
-            lambda_auto_wrap_policy, lambda_fn=lambda m: m in model.blocks),
-        mixed_precision=MixedPrecision(
-            param_dtype=param_dtype,
-            reduce_dtype=reduce_dtype,
-            buffer_dtype=buffer_dtype),
-        device_id=device_id,
-        sync_module_states=sync_module_states,
-        use_orig_params=True if use_lora else False)
-    return model
+  model = FSDP(
+      module=model,
+      process_group=process_group,
+      sharding_strategy=sharding_strategy,
+      auto_wrap_policy=partial(
+          lambda_auto_wrap_policy, lambda_fn=lambda m: m in model.blocks),
+      mixed_precision=MixedPrecision(
+          param_dtype=param_dtype,
+          reduce_dtype=reduce_dtype,
+          buffer_dtype=buffer_dtype),
+      device_id=device_id,
+      sync_module_states=sync_module_states,
+      use_orig_params=True if use_lora else False)
+  return model
 
 
 def free_model(model):
-    for m in model.modules():
-        if isinstance(m, FSDP):
-            _free_storage(m._handle.flat_param.data)
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
+  for m in model.modules():
+    if isinstance(m, FSDP):
+      _free_storage(m._handle.flat_param.data)
+  del model
+  gc.collect()
+  torch.cuda.empty_cache()

@@ -19,14 +19,15 @@ dependencies = [
     "diffusers>=0.31.0",
     "transformers>=4.49.0",
     "tokenizers>=0.20.3",
+    "safetensors",
     "accelerate>=1.1.1",
     "tqdm",
+    "einops",
     "imageio",
     "easydict",
     "ftfy",
     "dashscope",
     "imageio-ffmpeg",
-    "flash_attn",
     "numpy>=1.23.5,<2"
 ]
 
