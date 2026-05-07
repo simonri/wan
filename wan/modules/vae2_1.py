@@ -2,7 +2,6 @@
 import logging
 
 import torch
-import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
@@ -20,8 +19,21 @@ class CausalConv3d(nn.Conv3d):
   Causal 3d convolusion.
   """
 
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
+  def __init__(
+    self,
+    in_channels: int,
+    out_channels: int,
+    kernel_size: int | tuple[int, int, int],
+    stride: int | tuple[int, int, int] = 1,
+    padding: int | tuple[int, int, int] = 0,
+  ):
+    super().__init__(
+      in_channels=in_channels,
+      out_channels=out_channels,
+      kernel_size=kernel_size,
+      stride=stride,
+      padding=padding,
+    )
     self._padding = (self.padding[2], self.padding[2], self.padding[1], self.padding[1], 2 * self.padding[0], 0)
     self.padding = (0, 0, 0)
 
@@ -115,9 +127,7 @@ class Resample(nn.Module):
           feat_cache[idx] = x
         else:
           cache_x = x[:, :, -1:, :, :]
-          x = self.time_conv(
-            torch.cat([feat_cache[idx][:, :, -1:, :, :], x], 2)
-          )
+          x = self.time_conv(torch.cat([feat_cache[idx][:, :, -1:, :, :], x], 2))
           feat_cache[idx] = cache_x
 
           deferred_x = feat_cache[idx + 1]
@@ -409,6 +419,7 @@ def count_cache_layers(model):
     if isinstance(m, CausalConv3d) or (isinstance(m, Resample) and m.mode == 'downsample3d'):
       count += 1
   return count
+
 
 class WanVAE_(nn.Module):
   def __init__(self, dim=128, z_dim=4, dim_mult=[1, 2, 4, 4], num_res_blocks=2, attn_scales=[], temperal_downsample=[True, True, False], dropout=0.0):

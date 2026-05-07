@@ -104,7 +104,10 @@ def flash_attention(
         max_seqlen_k=lk,
         softmax_scale=softmax_scale,
         causal=causal,
-        deterministic=deterministic)[0].unflatten(0, (b, lq))
+        deterministic=deterministic)
+    if isinstance(x, tuple):
+      x = x[0]
+    x = x.unflatten(0, (b, lq))
 
   # output
   return x.type(out_dtype)

@@ -32,6 +32,6 @@ i2v_A14B.high_noise_checkpoint = 'high_noise_model'
 
 # inference
 i2v_A14B.sample_shift = 5.0
-i2v_A14B.sample_steps = 40
-i2v_A14B.boundary = 0.900
-i2v_A14B.sample_guide_scale = (3.5, 3.5)  # low noise, high noise
+i2v_A14B.sample_steps = 8
+i2v_A14B.boundary = 0.875
+i2v_A14B.sample_guide_scale = (1.0, 1.0)  # low noise, high noise

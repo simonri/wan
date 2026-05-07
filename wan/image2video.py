@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torchvision.transforms.functional as TF
-from safetensors.torch import load_model as load_safetensors_model
+from safetensors.torch import load_file as load_safetensors_file
 from tqdm import tqdm
 
 from .distributed.fsdp import shard_model
@@ -25,10 +25,10 @@ from .modules.vae2_1 import Wan2_1_VAE
 from .utils.fm_solvers import FlowDPMSolverMultistepScheduler, get_sampling_sigmas, retrieve_timesteps
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
-_COMFYUI_I2V_CHECKPOINTS = {
-  "low_noise_model": ("wan2.2_i2v_low_noise_14B_fp16.safetensors",),
-  "high_noise_model": ("wan2.2_i2v_high_noise_14B_fp16.safetensors",),
-}
+_LOW_NOISE_I2V_CHECKPOINT = "wan2.2_i2v_low_noise_14B_fp16.safetensors"
+_HIGH_NOISE_I2V_CHECKPOINT = "wan2.2_i2v_high_noise_14B_fp16.safetensors"
+_LOW_NOISE_LIGHTNING_LORA = "lightning_low_noise_model.safetensors"
+_HIGH_NOISE_LIGHTNING_LORA = "lightning_high_noise_model.safetensors"
 
 
 _COMFYUI_VAE_CHECKPOINTS = {
@@ -79,30 +79,53 @@ def _create_i2v_wan_model(config):
   )
 
 
-def _load_i2v_wan_model(checkpoint_dir, checkpoint_name, config):
-  checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
-  if os.path.isdir(checkpoint_path):
-    return WanModel.from_pretrained(checkpoint_dir, subfolder=checkpoint_name)
+def _load_i2v_wan_model(checkpoint_path, config):
+  if not os.path.isfile(checkpoint_path):
+    raise FileNotFoundError(f"Could not find I2V diffusion checkpoint: {checkpoint_path}")
 
-  candidates = []
-  if checkpoint_name.endswith(".safetensors"):
-    candidates.append(checkpoint_path)
-  candidates.extend(os.path.join(checkpoint_dir, filename) for filename in _COMFYUI_I2V_CHECKPOINTS.get(checkpoint_name, ()))
-  candidates.extend(os.path.join(checkpoint_dir, "diffusion_models", filename) for filename in _COMFYUI_I2V_CHECKPOINTS.get(checkpoint_name, ()))
+  logging.info(f"Loading WanModel from safetensors checkpoint: {checkpoint_path}")
+  model = _create_i2v_wan_model(config)
+  state_dict = load_safetensors_file(checkpoint_path, device="cpu")
+  model.load_state_dict(state_dict, strict=True)
+  return model
 
-  for candidate in candidates:
-    if not os.path.isfile(candidate):
+
+def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
+  if not os.path.isfile(lora_path):
+    raise FileNotFoundError(f"Could not find WanModel LoRA checkpoint: {lora_path}")
+
+  logging.info(f"Merging WanModel LoRA from safetensors checkpoint: {lora_path}")
+  state_dict = load_safetensors_file(lora_path, device="cpu")
+  down_suffix = ".lora_down.weight"
+
+  for key, down_weight in state_dict.items():
+    if not key.endswith(down_suffix):
       continue
 
-    logging.info(f"Loading WanModel from safetensors checkpoint: {candidate}")
-    model = _create_i2v_wan_model(config)
-    missing, unexpected = load_safetensors_model(model, candidate, strict=True, device="cpu")
-    if missing or unexpected:
-      raise RuntimeError(f"Unexpected safetensors load result for {candidate}: missing={missing}, unexpected={unexpected}")
-    return model
+    prefix = key[:-len(down_suffix)]
+    up_key = f"{prefix}.lora_up.weight"
+    alpha_key = f"{prefix}.alpha"
+    if up_key not in state_dict:
+      raise KeyError(f"Missing LoRA up weight for {key}: expected {up_key}")
 
-  expected = [checkpoint_path, *candidates]
-  raise FileNotFoundError("Could not find an I2V diffusion checkpoint. Expected one of: " + ", ".join(expected))
+    module_name = prefix.removeprefix("diffusion_model.")
+    module = model.get_submodule(module_name)
+    if not hasattr(module, "weight"):
+      raise TypeError(f"LoRA target module has no weight parameter: {module_name}")
+
+    up_weight = state_dict[up_key]
+    rank = down_weight.shape[0]
+    alpha = state_dict[alpha_key].item() if alpha_key in state_dict else rank
+    scale = strength * float(alpha) / rank
+    delta = torch.matmul(up_weight.float(), down_weight.float()) * scale
+
+    if delta.shape != module.weight.shape:
+      raise ValueError(
+        f"LoRA delta shape {tuple(delta.shape)} does not match {module_name}.weight shape {tuple(module.weight.shape)}"
+      )
+
+    with torch.no_grad():
+      module.weight.add_(delta.to(device=module.weight.device, dtype=module.weight.dtype))
 
 
 class WanI2V:
@@ -175,12 +198,26 @@ class WanI2V:
     )
 
     logging.info(f"Creating WanModel from {checkpoint_dir}")
-    self.low_noise_model = _load_i2v_wan_model(checkpoint_dir, config.low_noise_checkpoint, config)
+    self.low_noise_model = _load_i2v_wan_model(
+      os.path.join(checkpoint_dir, "diffusion_models", _LOW_NOISE_I2V_CHECKPOINT),
+      config,
+    )
+    _merge_lora_into_wan_model(
+      self.low_noise_model,
+      os.path.join(checkpoint_dir, "loras", _LOW_NOISE_LIGHTNING_LORA),
+    )
     self.low_noise_model = self._configure_model(
       model=self.low_noise_model, use_sp=use_sp, dit_fsdp=dit_fsdp, shard_fn=shard_fn, convert_model_dtype=convert_model_dtype
     )
 
-    self.high_noise_model = _load_i2v_wan_model(checkpoint_dir, config.high_noise_checkpoint, config)
+    self.high_noise_model = _load_i2v_wan_model(
+      os.path.join(checkpoint_dir, "diffusion_models", _HIGH_NOISE_I2V_CHECKPOINT),
+      config,
+    )
+    _merge_lora_into_wan_model(
+      self.high_noise_model,
+      os.path.join(checkpoint_dir, "loras", _HIGH_NOISE_LIGHTNING_LORA),
+    )
     self.high_noise_model = self._configure_model(
       model=self.high_noise_model, use_sp=use_sp, dit_fsdp=dit_fsdp, shard_fn=shard_fn, convert_model_dtype=convert_model_dtype
     )

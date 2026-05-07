@@ -8,4 +8,4 @@ nohup*
 wan.egg-info
 models
 encoded.pt
-decoded.mp4
+*.mp4

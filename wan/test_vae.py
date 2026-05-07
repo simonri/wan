@@ -5,6 +5,7 @@ import torch
 import torchvision.transforms.functional as TF
 from PIL import Image
 
+from .bench.layer_timer import LayerTimer
 from .modules.vae2_1 import Wan2_1_VAE
 from .utils.utils import save_video
 
@@ -21,6 +22,23 @@ def parse_args():
     "--benchmark",
     action="store_true",
     help="Run the VAE encode benchmark instead of comparing against encoded.pt.",
+  )
+  parser.add_argument(
+    "--profile-layers",
+    action="store_true",
+    help="Time each leaf module during one VAE encode pass.",
+  )
+  parser.add_argument(
+    "--profile-limit",
+    type=int,
+    default=40,
+    help="Maximum number of timed layers to print.",
+  )
+  parser.add_argument(
+    "--profile-filter",
+    type=str,
+    default=None,
+    help="Only profile modules whose name or class contains this substring.",
   )
   return parser.parse_args()
 
@@ -96,6 +114,18 @@ def benchmark(vae, video):
   print(f"Std:    {statistics.pstdev(times):.6f} sec")
 
 
+def profile_layers(vae, video, limit, name_filter):
+  warmup(vae, video, run_count=1)
+
+  with torch.inference_mode(), LayerTimer(vae.model, name_filter=name_filter) as timer:
+    _ = vae.encode([video])[0]
+
+  print(f"{'Total ms':>10}  {'Calls':>5}  {'Module':<18}  Name")
+  print("-" * 90)
+  for total_ms, calls, class_name, name in timer.results_ms()[:limit]:
+    print(f"{total_ms:10.3f}  {calls:5d}  {class_name:<18}  {name}")
+
+
 def main():
   args = parse_args()
   device = torch.device("cuda:0")
@@ -105,7 +135,9 @@ def main():
 
   video = build_video(device)
 
-  if args.benchmark:
+  if args.profile_layers:
+    profile_layers(vae, video, args.profile_limit, args.profile_filter)
+  elif args.benchmark:
     warmup(vae, video)
     benchmark(vae, video)
   else:
@@ -114,3 +146,14 @@ def main():
 
 if __name__ == "__main__":
   main()
+
+# this run before spatial downsampling
+# 208.911     41  CausalConv3d        encoder.downsamples.0.residual.2
+# 208.417     41  CausalConv3d        encoder.downsamples.1.residual.2
+# 208.216     41  CausalConv3d        encoder.downsamples.0.residual.6
+# 208.098     41  CausalConv3d        encoder.downsamples.1.residual.6
+
+# those run after one downsample
+# 125.261     41  CausalConv3d        encoder.downsamples.3.residual.6
+# 125.138     41  CausalConv3d        encoder.downsamples.4.residual.6
+# 125.107     41  CausalConv3d        encoder.downsamples.4.residual.2
