@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from einops import rearrange
 from safetensors.torch import load_file as load_safetensors_file
 
+from wan.kernels.rsnorm import rms_norm_triton
+
 __all__ = [
   'Wan2_1_VAE',
 ]
@@ -49,18 +51,51 @@ class CausalConv3d(nn.Conv3d):
 
 
 class RMS_norm(nn.Module):
-  def __init__(self, dim, channel_first=True, images=True, bias=False):
+  def __init__(self, dim, channel_first=True, images=True, bias=False, eps=1e-6, fused_silu=False):
     super().__init__()
+    if fused_silu and bias:
+      raise ValueError("RMS_norm does not support fused_silu with bias=True (changes order: silu(x*w) + b vs silu(x*w + b))")
     broadcastable_dims = (1, 1, 1) if not images else (1, 1)
     shape = (dim, *broadcastable_dims) if channel_first else (dim,)
 
     self.channel_first = channel_first
-    self.scale = dim**0.5
+    self.eps = eps
+    self.fused_silu = fused_silu
     self.gamma = nn.Parameter(torch.ones(shape))
-    self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.0
+    self.bias = nn.Parameter(torch.zeros(shape)) if bias else None
 
   def forward(self, x):
-    return F.normalize(x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma + self.bias
+    weight = self.gamma.reshape(-1)
+    bias = self.bias.reshape(-1) if self.bias is not None else None
+
+    if not self.channel_first:
+      x = rms_norm_triton(x, weight, eps=self.eps, silu=self.fused_silu)
+      return x + bias if bias is not None else x
+
+    if x.dim() == 5:
+      x = x.permute(0, 2, 3, 4, 1)
+      x = rms_norm_triton(x, weight, eps=self.eps, silu=self.fused_silu)
+      if bias is not None:
+        x = x + bias
+      return x.permute(0, 4, 1, 2, 3)
+
+    if x.dim() == 4:
+      x = x.permute(0, 2, 3, 1)
+      x = rms_norm_triton(x, weight, eps=self.eps, silu=self.fused_silu)
+      if bias is not None:
+        x = x + bias
+      return x.permute(0, 3, 1, 2)
+
+    raise ValueError(f"RMS_norm expected a 4D or 5D channel-first tensor, got shape {tuple(x.shape)}")
+
+
+def _to_vae_channels_last(model):
+  for module in model.modules():
+    if isinstance(module, nn.Conv2d):
+      module.weight.data = module.weight.data.contiguous(memory_format=torch.channels_last)
+    elif isinstance(module, nn.Conv3d):
+      module.weight.data = module.weight.data.contiguous(memory_format=torch.channels_last_3d)
+  return model
 
 
 class Upsample(nn.Upsample):
@@ -117,9 +152,9 @@ class Resample(nn.Module):
           x = torch.stack((x[:, 0, :, :, :, :], x[:, 1, :, :, :, :]), 3)
           x = x.reshape(b, c, t * 2, h, w)
     t = x.shape[2]
-    x = x.permute(0, 2, 1, 3, 4).flatten(0, 1)
+    x = x.permute(0, 2, 1, 3, 4).flatten(0, 1).contiguous(memory_format=torch.channels_last)
     x = self.resample(x)
-    x = x.unflatten(0, (-1, t)).permute(0, 2, 1, 3, 4)
+    x = x.unflatten(0, (-1, t)).permute(0, 2, 1, 3, 4).contiguous(memory_format=torch.channels_last_3d)
 
     if self.mode == 'downsample3d':
       if feat_cache is not None:
@@ -173,32 +208,48 @@ class ResidualBlock(nn.Module):
     self.in_dim = in_dim
     self.out_dim = out_dim
 
-    # layers
+    # layers (SiLU is fused into the preceding RMS_norm; Identity preserves Sequential indices)
     self.residual = nn.Sequential(
-      RMS_norm(in_dim, images=False),
-      nn.SiLU(),
+      RMS_norm(in_dim, images=False, fused_silu=True),
+      nn.Identity(),
       CausalConv3d(in_dim, out_dim, 3, padding=1),
-      RMS_norm(out_dim, images=False),
-      nn.SiLU(),
+      RMS_norm(out_dim, images=False, fused_silu=True),
+      nn.Identity(),
       nn.Dropout(dropout),
       CausalConv3d(out_dim, out_dim, 3, padding=1),
     )
     self.shortcut = CausalConv3d(in_dim, out_dim, 1) if in_dim != out_dim else nn.Identity()
 
   def forward(self, x, feat_cache=None, feat_idx=[0], final=False):
+    # apply shortcut connection
     h = self.shortcut(x)
-    for layer in self.residual:
-      if isinstance(layer, CausalConv3d) and feat_cache is not None:
-        idx = feat_idx[0]
-        cache_x = x[:, :, -CACHE_T:, :, :].clone()
-        if cache_x.shape[2] < 2 and feat_cache[idx] is not None:
-          # cache last frame of last two chunk
-          cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-        x = layer(x, feat_cache[idx])
-        feat_cache[idx] = cache_x
-        feat_idx[0] += 1
-      else:
-        x = layer(x)
+
+    x = self.residual[0](x)
+    x = self.residual[1](x)
+
+    idx = feat_idx[0]
+    cache_x = x[:, :, -CACHE_T:, :, :].clone()
+    if cache_x.shape[2] < 2 and feat_cache[idx] is not None:
+      # cache last frame of last two chunk
+      cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
+    x = self.residual[2](x, feat_cache[idx])
+    feat_cache[idx] = cache_x
+    feat_idx[0] += 1
+
+    x = self.residual[3](x)
+    x = self.residual[4](x)
+
+    x = self.residual[5](x)
+
+    idx = feat_idx[0]
+    cache_x = x[:, :, -CACHE_T:, :, :].clone()
+    if cache_x.shape[2] < 2 and feat_cache[idx] is not None:
+      # cache last frame of last two chunk
+      cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
+    x = self.residual[6](x, feat_cache[idx])
+    feat_cache[idx] = cache_x
+    feat_idx[0] += 1
+
     return x + h
 
 
@@ -278,8 +329,8 @@ class Encoder3d(nn.Module):
     # middle blocks
     self.middle = nn.Sequential(ResidualBlock(out_dim, out_dim, dropout), AttentionBlock(out_dim), ResidualBlock(out_dim, out_dim, dropout))
 
-    # output blocks
-    self.head = nn.Sequential(RMS_norm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, z_dim, 3, padding=1))
+    # output blocks (SiLU fused into preceding RMS_norm)
+    self.head = nn.Sequential(RMS_norm(out_dim, images=False, fused_silu=True), nn.Identity(), CausalConv3d(out_dim, z_dim, 3, padding=1))
 
   def forward(self, x, feat_cache=None, feat_idx=[0], final=False):
     if feat_cache is not None:
@@ -359,8 +410,8 @@ class Decoder3d(nn.Module):
         scale *= 2.0
     self.upsamples = nn.Sequential(*upsamples)
 
-    # output blocks
-    self.head = nn.Sequential(RMS_norm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, 3, 3, padding=1))
+    # output blocks (SiLU fused into preceding RMS_norm)
+    self.head = nn.Sequential(RMS_norm(out_dim, images=False, fused_silu=True), nn.Identity(), CausalConv3d(out_dim, 3, 3, padding=1))
 
   def forward(self, x, feat_cache=None, feat_idx=[0]):
     # conv1
@@ -560,14 +611,17 @@ class Wan2_1_VAE:
       .requires_grad_(False)
       .to(device)
     )
+    _to_vae_channels_last(self.model)
 
   def encode(self, videos):
     """
     videos: A list of videos each with shape [C, T, H, W].
     """
     with torch.amp.autocast("cuda", dtype=self.dtype):
-      return [self.model.encode(u.unsqueeze(0), self.scale).float().squeeze(0) for u in videos]
+      return [self.model.encode(u.unsqueeze(0).contiguous(memory_format=torch.channels_last_3d), self.scale).float().squeeze(0) for u in videos]
 
   def decode(self, zs):
     with torch.amp.autocast("cuda", dtype=self.dtype):
-      return [self.model.decode(u.unsqueeze(0), self.scale).float().clamp_(-1, 1).squeeze(0) for u in zs]
+      return [
+        self.model.decode(u.unsqueeze(0).contiguous(memory_format=torch.channels_last_3d), self.scale).float().clamp_(-1, 1).squeeze(0) for u in zs
+      ]

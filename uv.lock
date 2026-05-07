@@ -1244,6 +1244,7 @@ dependencies = [
     { name = "torchvision", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "tqdm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "transformers", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "triton", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
@@ -1282,6 +1283,7 @@ requires-dist = [
     { name = "torchvision", specifier = ">=0.19.0", index = "https://download.pytorch.org/whl/nightly/cu128" },
     { name = "tqdm" },
     { name = "transformers", specifier = ">=4.49.0" },
+    { name = "triton", specifier = ">=3.7.0" },
 ]
 provides-extras = ["dev"]
 
