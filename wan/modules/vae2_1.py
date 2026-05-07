@@ -96,6 +96,7 @@ class Resample(nn.Module):
 
   def forward(self, x, feat_cache=None, feat_idx=[0], final=False):
     b, c, t, h, w = x.size()
+
     if self.mode == 'upsample3d':
       if feat_cache is not None:
         idx = feat_idx[0]
@@ -116,9 +117,9 @@ class Resample(nn.Module):
           x = torch.stack((x[:, 0, :, :, :, :], x[:, 1, :, :, :, :]), 3)
           x = x.reshape(b, c, t * 2, h, w)
     t = x.shape[2]
-    x = rearrange(x, 'b c t h w -> (b t) c h w')
+    x = x.permute(0, 2, 1, 3, 4).flatten(0, 1)
     x = self.resample(x)
-    x = rearrange(x, '(b t) c h w -> b c t h w', t=t)
+    x = x.unflatten(0, (-1, t)).permute(0, 2, 1, 3, 4)
 
     if self.mode == 'downsample3d':
       if feat_cache is not None:
@@ -167,7 +168,7 @@ class Resample(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-  def __init__(self, in_dim, out_dim, dropout=0.0):
+  def __init__(self, in_dim: int, out_dim: int, dropout=0.0):
     super().__init__()
     self.in_dim = in_dim
     self.out_dim = out_dim

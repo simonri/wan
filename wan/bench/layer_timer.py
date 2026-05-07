@@ -4,9 +4,10 @@ import torch
 
 
 class LayerTimer:
-  def __init__(self, model, name_filter=None):
+  def __init__(self, model, name_filter=None, include_parents=False):
     self.model = model
     self.name_filter = name_filter.lower() if name_filter else None
+    self.include_parents = include_parents
     self.handles = []
     self.starts = collections.defaultdict(list)
     self.timings = collections.OrderedDict()
@@ -14,7 +15,9 @@ class LayerTimer:
 
   def __enter__(self):
     for name, module in self.model.named_modules():
-      if name == "" or any(module.children()):
+      if name == "":
+        continue
+      if not self.include_parents and any(module.children()):
         continue
 
       class_name = module.__class__.__name__
