@@ -25,10 +25,10 @@ from .modules.vae2_1 import Wan2_1_VAE
 from .utils.fm_solvers import FlowDPMSolverMultistepScheduler, get_sampling_sigmas, retrieve_timesteps
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
-_LOW_NOISE_I2V_CHECKPOINT = "wan2.2_i2v_low_noise_14B_fp16.safetensors"
-_HIGH_NOISE_I2V_CHECKPOINT = "wan2.2_i2v_high_noise_14B_fp16.safetensors"
-_LOW_NOISE_LIGHTNING_LORA = "lightning_low_noise_model.safetensors"
-_HIGH_NOISE_LIGHTNING_LORA = "lightning_high_noise_model.safetensors"
+_LOW_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors"
+_HIGH_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors"
+_LOW_NOISE_LIGHTNING_LORA = "models/loras/lightning_low_noise_model.safetensors"
+_HIGH_NOISE_LIGHTNING_LORA = "models/loras/lightning_high_noise_model.safetensors"
 
 
 _COMFYUI_VAE_CHECKPOINTS = {
@@ -197,27 +197,15 @@ class WanI2V:
       vae_pth=_resolve_comfyui_file(checkpoint_dir, config.vae_checkpoint, "vae", _COMFYUI_VAE_CHECKPOINTS.get(config.vae_checkpoint, ())), device=self.device
     )
 
-    logging.info(f"Creating WanModel from {checkpoint_dir}")
-    self.low_noise_model = _load_i2v_wan_model(
-      os.path.join(checkpoint_dir, "diffusion_models", _LOW_NOISE_I2V_CHECKPOINT),
-      config,
-    )
-    _merge_lora_into_wan_model(
-      self.low_noise_model,
-      os.path.join(checkpoint_dir, "loras", _LOW_NOISE_LIGHTNING_LORA),
-    )
+    logging.info("Creating WanModel")
+    self.low_noise_model = _load_i2v_wan_model(_LOW_NOISE_I2V_CHECKPOINT, config)
+    _merge_lora_into_wan_model(self.low_noise_model, _LOW_NOISE_LIGHTNING_LORA)
     self.low_noise_model = self._configure_model(
       model=self.low_noise_model, use_sp=use_sp, dit_fsdp=dit_fsdp, shard_fn=shard_fn, convert_model_dtype=convert_model_dtype
     )
 
-    self.high_noise_model = _load_i2v_wan_model(
-      os.path.join(checkpoint_dir, "diffusion_models", _HIGH_NOISE_I2V_CHECKPOINT),
-      config,
-    )
-    _merge_lora_into_wan_model(
-      self.high_noise_model,
-      os.path.join(checkpoint_dir, "loras", _HIGH_NOISE_LIGHTNING_LORA),
-    )
+    self.high_noise_model = _load_i2v_wan_model(_HIGH_NOISE_I2V_CHECKPOINT, config)
+    _merge_lora_into_wan_model(self.high_noise_model, _HIGH_NOISE_LIGHTNING_LORA)
     self.high_noise_model = self._configure_model(
       model=self.high_noise_model, use_sp=use_sp, dit_fsdp=dit_fsdp, shard_fn=shard_fn, convert_model_dtype=convert_model_dtype
     )
