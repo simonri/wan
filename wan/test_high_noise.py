@@ -4,6 +4,7 @@ import statistics
 import torch
 
 from .bench.layer_timer import LayerTimer
+from .bench.nvtx_marker import NVTXMarker, cuda_profiler_start, cuda_profiler_stop
 from .configs import i2v_A14B
 from .image2video import _HIGH_NOISE_I2V_CHECKPOINT, _HIGH_NOISE_LIGHTNING_LORA, _load_i2v_wan_model, _merge_lora_into_wan_model
 
@@ -19,6 +20,7 @@ def parse_args():
   parser.add_argument("--profile-parents", action="store_true", help="Include non-leaf parent modules in layer timings.")
   parser.add_argument("--profile-limit", type=int, default=40, help="Maximum number of timed layers to print.")
   parser.add_argument("--profile-filter", type=str, default=None, help="Only profile modules whose name or class contains this substring.")
+  parser.add_argument("--nsys", action="store_true", help="Run one step inside cudaProfilerStart/Stop with NVTX module ranges. Launch under `nsys profile --capture-range=cudaProfilerApi`.")
   return parser.parse_args()
 
 
@@ -94,6 +96,17 @@ def benchmark(model, inputs, dtype, run_count=10):
   print(f"Std:    {statistics.pstdev(times):.6f} sec")
 
 
+def profile_nsys(model, inputs, dtype):
+  warmup(model, inputs, dtype, run_count=2)
+  cuda_profiler_start()
+  with NVTXMarker(model):
+    torch.cuda.nvtx.range_push("step_once")
+    _ = step_once(model, inputs, dtype)
+    torch.cuda.synchronize()
+    torch.cuda.nvtx.range_pop()
+  cuda_profiler_stop()
+
+
 def profile_layers(model, inputs, dtype, limit, name_filter, include_parents):
   warmup(model, inputs, dtype, run_count=1)
 
@@ -117,7 +130,9 @@ def main():
   model = build_model(device, dtype)
   inputs = build_inputs(device, i2v_A14B)
 
-  if args.profile_layers:
+  if args.nsys:
+    profile_nsys(model, inputs, dtype)
+  elif args.profile_layers:
     profile_layers(model, inputs, dtype, args.profile_limit, args.profile_filter, args.profile_parents)
   elif args.benchmark:
     warmup(model, inputs, dtype)

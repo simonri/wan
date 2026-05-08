@@ -9,3 +9,4 @@ wan.egg-info
 models
 encoded.pt
 *.mp4
+traces/

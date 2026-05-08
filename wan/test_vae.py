@@ -6,6 +6,7 @@ import torchvision.transforms.functional as TF
 from PIL import Image
 
 from .bench.layer_timer import LayerTimer
+from .bench.nvtx_marker import NVTXMarker, cuda_profiler_start, cuda_profiler_stop
 from .modules.vae2_1 import Wan2_1_VAE
 from .utils.utils import save_video
 
@@ -44,6 +45,11 @@ def parse_args():
     type=str,
     default=None,
     help="Only profile modules whose name or class contains this substring.",
+  )
+  parser.add_argument(
+    "--nsys",
+    action="store_true",
+    help="Run one encode inside cudaProfilerStart/Stop with NVTX module ranges. Launch under `nsys profile --capture-range=cudaProfilerApi`.",
   )
   return parser.parse_args()
 
@@ -119,6 +125,17 @@ def benchmark(vae, video):
   print(f"Std:    {statistics.pstdev(times):.6f} sec")
 
 
+def profile_nsys(vae, video):
+  warmup(vae, video, run_count=2)
+  cuda_profiler_start()
+  with torch.inference_mode(), NVTXMarker(vae.model):
+    torch.cuda.nvtx.range_push("encode")
+    _ = vae.encode([video])[0]
+    torch.cuda.synchronize()
+    torch.cuda.nvtx.range_pop()
+  cuda_profiler_stop()
+
+
 def profile_layers(vae, video, limit, name_filter, include_parents):
   warmup(vae, video, run_count=1)
 
@@ -142,7 +159,9 @@ def main():
 
   video = build_video(device)
 
-  if args.profile_layers:
+  if args.nsys:
+    profile_nsys(vae, video)
+  elif args.profile_layers:
     profile_layers(vae, video, args.profile_limit, args.profile_filter, args.profile_parents)
   elif args.benchmark:
     warmup(vae, video)
