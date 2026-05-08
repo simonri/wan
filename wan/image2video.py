@@ -86,6 +86,12 @@ def _load_i2v_wan_model(checkpoint_path, config):
   logging.info(f"Loading WanModel from safetensors checkpoint: {checkpoint_path}")
   model = _create_i2v_wan_model(config)
   state_dict = load_safetensors_file(checkpoint_path, device="cpu")
+
+  if "patch_embedding.weight" in state_dict:
+    state_dict["patch_embedding.proj.weight"] = state_dict.pop("patch_embedding.weight")
+  if "patch_embedding.bias" in state_dict:
+    state_dict["patch_embedding.proj.bias"] = state_dict.pop("patch_embedding.bias")
+
   model.load_state_dict(state_dict, strict=True)
   return model
 
@@ -102,7 +108,7 @@ def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
     if not key.endswith(down_suffix):
       continue
 
-    prefix = key[:-len(down_suffix)]
+    prefix = key[: -len(down_suffix)]
     up_key = f"{prefix}.lora_up.weight"
     alpha_key = f"{prefix}.alpha"
     if up_key not in state_dict:
@@ -120,9 +126,7 @@ def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
     delta = torch.matmul(up_weight.float(), down_weight.float()) * scale
 
     if delta.shape != module.weight.shape:
-      raise ValueError(
-        f"LoRA delta shape {tuple(delta.shape)} does not match {module_name}.weight shape {tuple(module.weight.shape)}"
-      )
+      raise ValueError(f"LoRA delta shape {tuple(delta.shape)} does not match {module_name}.weight shape {tuple(module.weight.shape)}")
 
     with torch.no_grad():
       module.weight.add_(delta.to(device=module.weight.device, dtype=module.weight.dtype))

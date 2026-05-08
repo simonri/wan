@@ -12,42 +12,19 @@ import torch.distributed as dist
 from PIL import Image
 
 import wan
-from wan.configs import MAX_AREA_CONFIGS, SIZE_CONFIGS, SUPPORTED_SIZES, WAN_CONFIGS
+from wan.configs import MAX_AREA_CONFIGS, SIZE_CONFIGS, SUPPORTED_SIZES
+from wan.configs.wan_i2v_A14B import i2v_A14B
 from wan.distributed.util import init_distributed_group
 from wan.utils.utils import save_video, str2bool
 
 warnings.filterwarnings('ignore')
 
 
-EXAMPLE_PROMPT = {
-  "i2v-A14B": {
-    "prompt": "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside.",
-    "image": "examples/i2v_input.JPG",
-  },
-}
-
-
 def _validate_args(args):
   # Basic check
   assert args.ckpt_dir is not None, "Please specify the checkpoint directory."
-  assert args.task in WAN_CONFIGS, f"Unsupport task: {args.task}"
-  assert args.task in EXAMPLE_PROMPT, f"Unsupport task: {args.task}"
 
-  if args.prompt is None:
-    args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]
-  if args.image is None and "image" in EXAMPLE_PROMPT[args.task]:
-    args.image = EXAMPLE_PROMPT[args.task]["image"]
-  if args.audio is None and args.enable_tts is False and "audio" in EXAMPLE_PROMPT[args.task]:
-    args.audio = EXAMPLE_PROMPT[args.task]["audio"]
-  if (args.tts_prompt_audio is None or args.tts_text is None) and args.enable_tts is True and "audio" in EXAMPLE_PROMPT[args.task]:
-    args.tts_prompt_audio = EXAMPLE_PROMPT[args.task]["tts_prompt_audio"]
-    args.tts_prompt_text = EXAMPLE_PROMPT[args.task]["tts_prompt_text"]
-    args.tts_text = EXAMPLE_PROMPT[args.task]["tts_text"]
-
-  if args.task == "i2v-A14B":
-    assert args.image is not None, "Please specify the image path for i2v."
-
-  cfg = WAN_CONFIGS[args.task]
+  cfg = i2v_A14B
 
   if args.sample_steps is None:
     args.sample_steps = cfg.sample_steps
@@ -63,14 +40,13 @@ def _validate_args(args):
 
   args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(0, sys.maxsize)
   # Size check
-  assert args.size in SUPPORTED_SIZES[args.task], (
-    f"Unsupport size {args.size} for task {args.task}, supported sizes are: {', '.join(SUPPORTED_SIZES[args.task])}"
+  assert args.size in SUPPORTED_SIZES, (
+    f"Unsupport size {args.size}, supported sizes are: {', '.join(SUPPORTED_SIZES)}"
   )
 
 
 def _parse_args():
   parser = argparse.ArgumentParser(description="Generate a image or video from a text prompt or image using Wan")
-  parser.add_argument("--task", type=str, default="t2v-A14B", choices=list(WAN_CONFIGS.keys()), help="The task to run.")
   parser.add_argument(
     "--size",
     type=str,
@@ -151,7 +127,7 @@ def generate(args):
     assert args.ulysses_size == world_size, "The number of ulysses_size should be equal to the world size."
     init_distributed_group()
 
-  cfg = WAN_CONFIGS[args.task]
+  cfg = i2v_A14B
   if args.ulysses_size > 1:
     assert cfg.num_heads % args.ulysses_size == 0, f"`{cfg.num_heads=}` cannot be divided evenly by `{args.ulysses_size=}`."
 
@@ -201,7 +177,7 @@ def generate(args):
       formatted_prompt = args.prompt.replace(" ", "_").replace("/", "_")[:50]
       suffix = '.mp4'
       args.save_file = (
-        f"{args.task}_{args.size.replace('*', 'x') if sys.platform == 'win32' else args.size}_{args.ulysses_size}_{formatted_prompt}_{formatted_time}" + suffix
+        f"{args.size.replace('*', 'x') if sys.platform == 'win32' else args.size}_{args.ulysses_size}_{formatted_prompt}_{formatted_time}" + suffix
       )
 
     logging.info(f"Saving generated video to {args.save_file}")

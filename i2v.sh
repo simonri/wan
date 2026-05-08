@@ -1,4 +1,4 @@
-uv run generate-new.py --task i2v-A14B --size 480*832 \
+uv run generate-new.py --size 480*832 \
       --ckpt_dir ./models --convert_model_dtype \
       --image examples/i2v_input.JPG \
       --sample_steps 8 --sample_guide_scale 1.0 \

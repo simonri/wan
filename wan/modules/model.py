@@ -7,6 +7,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
 from .attention import flash_attention
+from wan.layers.visual_embedding import PatchEmbed
 
 __all__ = ['WanModel']
 
@@ -337,8 +338,9 @@ class WanModel(ModelMixin, ConfigMixin):
     self.cross_attn_norm = cross_attn_norm
     self.eps = eps
 
-    # embeddings
-    self.patch_embedding = nn.Conv3d(in_dim, dim, kernel_size=patch_size, stride=patch_size)
+    # patch & position embedding
+    # since kernel_size = patch_size = stride, we can use PatchEmbed instead of nn.Conv3d
+    self.patch_embedding = PatchEmbed(in_chans=in_dim, embed_dim=dim, patch_size=patch_size, flatten=False)
     self.text_embedding = nn.Sequential(nn.Linear(text_dim, dim), nn.GELU(approximate='tanh'), nn.Linear(dim, dim))
 
     self.time_embedding = nn.Sequential(nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
@@ -355,16 +357,13 @@ class WanModel(ModelMixin, ConfigMixin):
     d = dim // num_heads
     self.freqs = torch.cat([rope_params(1024, d - 4 * (d // 6)), rope_params(1024, 2 * (d // 6)), rope_params(1024, 2 * (d // 6))], dim=1)
 
-    # initialize weights
-    self.init_weights()
-
   def forward(
     self,
-    x,
-    t,
-    context,
-    seq_len,
-    y=None,
+    x: list[torch.Tensor],
+    t: torch.Tensor,
+    context: list[torch.Tensor],
+    seq_len: int,
+    y: list[torch.Tensor] | None = None,
   ):
     r"""
     Forward pass through the diffusion model
@@ -388,9 +387,8 @@ class WanModel(ModelMixin, ConfigMixin):
     if self.model_type == 'i2v':
       assert y is not None
     # params
-    device = self.patch_embedding.weight.device
-    if self.freqs.device != device:
-      self.freqs = self.freqs.to(device)
+    if self.freqs.device != self.patch_embedding.proj.weight.device:
+      self.freqs = self.freqs.to(self.patch_embedding.proj.weight.device)
 
     if y is not None:
       x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]

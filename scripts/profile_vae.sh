@@ -10,4 +10,4 @@ nsys profile \
   --capture-range=cudaProfilerApi \
   --capture-range-end=stop \
   --force-overwrite=true \
-  python -m wan.test_vae --nsys "$@"
+  uv run python -m wan.test_vae --nsys "$@"
