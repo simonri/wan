@@ -1,9 +1,91 @@
+import math
+
+import torch
 import torch.nn.functional as F
 from torch import nn
 
+from wan.layers.activation import get_act_fn
+from wan.layers.mlp import MLP
+
+
+def timestep_embedding(
+  t: torch.Tensor,
+  dim: int,
+  max_period: int = 10000,
+  dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+  """
+  Create sinusoidal timestep embeddings.
+
+  Args:
+    t: Tensor of shape [B] with timesteps
+    dim: Embedding dimension
+    max_period: Controls the minimum frequency of the embeddings
+
+  Returns:
+    Tensor of shape [B, dim] with embeddings
+  """
+  half = dim // 2
+  freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=dtype, device=t.device) / half)
+  args = t[:, None].float() * freqs[None]
+  embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+  if dim % 2:
+    embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+  return embedding
+
+
+class TimestepEmbedder(nn.Module):
+  def __init__(
+    self,
+    hidden_size,
+    act_layer="silu",
+    frequency_embedding_size=256,
+    max_period=10000,
+    dtype=None,
+    freq_dtype=torch.float32,
+  ):
+    super().__init__()
+    self.frequency_embedding_size = frequency_embedding_size
+    self.max_period = max_period
+
+    self.mlp = MLP(
+      frequency_embedding_size,
+      hidden_size,
+      hidden_size,
+      act_type=act_layer,
+    )
+    self.freq_dtype = freq_dtype
+
+  def forward(
+    self,
+    t: torch.Tensor,
+    timestep_seq_len: int | None = None,
+  ) -> torch.Tensor:
+    t_freq = timestep_embedding(t, self.frequency_embedding_size, self.max_period, dtype=self.freq_dtype).to(
+      self.mlp.fc_in.weight.dtype
+    )
+
+    if timestep_seq_len is not None:
+      assert (t_freq.shape[0] % timestep_seq_len) == 0
+      batch_size = t_freq.shape[0] // timestep_seq_len
+      t_freq = t_freq.unflatten(0, (batch_size, timestep_seq_len))
+
+    t_emb = self.mlp(t_freq)
+    return t_emb
+
 
 class PatchEmbed(nn.Module):
-  def __init__(self, patch_size=16, in_chans=3, embed_dim=768, norm_layer=None, flatten=True, bias=True, dtype=None, prefix: str = ""):
+  def __init__(
+    self,
+    patch_size=16,
+    in_chans=3,
+    embed_dim=768,
+    norm_layer=None,
+    flatten=True,
+    bias=True,
+    dtype=None,
+    prefix: str = "",
+  ):
     super().__init__()
     if isinstance(patch_size, list | tuple):
       if len(patch_size) == 1:
@@ -54,4 +136,28 @@ class PatchEmbed(nn.Module):
     if self.flatten:
       x = x.flatten(2).transpose(1, 2)
     x = self.norm(x)
+    return x
+
+
+class ModulateProjection(nn.Module):
+  def __init__(
+    self,
+    hidden_size: int,
+    factor: int = 2,
+    act_layer: str = "silu",
+    dtype: torch.dtype | None = None,
+  ):
+    super().__init__()
+    self.factor = factor
+    self.hidden_size = hidden_size
+    self.linear = nn.Linear(
+      hidden_size,
+      hidden_size * factor,
+      bias=True,
+    )
+    self.act = get_act_fn(act_layer)
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    x = self.act(x)
+    x = self.linear(x)
     return x

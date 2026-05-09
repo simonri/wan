@@ -4,6 +4,7 @@ from torch import nn
 _ACTIVATION_REGISTRY = {
   "gelu": nn.GELU,
   "gelu_pytorch_tanh": lambda: nn.GELU(approximate="tanh"),
+  "silu": nn.SiLU,
 }
 
 
