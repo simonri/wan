@@ -103,6 +103,9 @@ def _load_i2v_wan_model(checkpoint_path, config):
     "time_embedding.2.bias": "condition_embedder.time_embedder.mlp.fc_out.bias",
     "time_projection.1.weight": "condition_embedder.time_modulation.linear.weight",
     "time_projection.1.bias": "condition_embedder.time_modulation.linear.bias",
+    "head.head.weight": "proj_out.weight",
+    "head.head.bias": "proj_out.bias",
+    "head.modulation": "scale_shift_table",
   }
   for old_key, new_key in key_map.items():
     if old_key in state_dict:
@@ -466,12 +469,10 @@ class WanI2V:
 
       arg_c = {
         'context': [context[0]],
-        'seq_len': max_seq_len,
       }
 
       arg_null = {
         'context': context_null,
-        'seq_len': max_seq_len,
       }
 
       if offload_model:
@@ -482,6 +483,7 @@ class WanI2V:
         timestep = [t]
 
         timestep = torch.stack(timestep).to(self.device)
+        timestep = timestep.unsqueeze(-1).expand(-1, max_seq_len)
 
         model = self._prepare_model_for_timestep(t, boundary, offload_model)
         sample_guide_scale = guide_scale[1] if t.item() >= boundary else guide_scale[0]

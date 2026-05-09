@@ -66,17 +66,18 @@ def sp_dit_forward(
     y,
     t,
     context,
-    seq_len,
 ):
   """
   y:              A list of videos each with shape [C, T, H, W].
-  t:              [B].
+  t:              [B, seq_len]. Sequence length is derived from this shape.
   context:        A list of text embeddings each with shape [L, C].
   """
   # params
   device = self.patch_embedding.proj.weight.device
   if self.freqs.device != device:
     self.freqs = self.freqs.to(device)
+
+  seq_len = t.shape[-1]
 
   # embeddings
   x = [self.patch_embedding(u.unsqueeze(0)) for u in y]
@@ -89,10 +90,6 @@ def sp_dit_forward(
       torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))], dim=1)
       for u in x
   ])
-
-  # time embeddings
-  if t.dim() == 1:
-    t = t.expand(t.size(0), seq_len)
 
   # context
   context_lens = None

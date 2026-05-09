@@ -48,9 +48,8 @@ def build_model(device, dtype):
   return model
 
 
-def build_inputs(device, config, seed=0):
+def build_inputs(device, config, dtype, seed=0):
   vae_stride = config.vae_stride  # (4, 8, 8)
-  patch_size = config.patch_size  # (1, 2, 2)
   H, W = IMAGE_SIZE
   lat_h = H // vae_stride[1]
   lat_w = W // vae_stride[2]
@@ -67,23 +66,22 @@ def build_inputs(device, config, seed=0):
   y_latent = torch.randn(16, lat_f, lat_h, lat_w, dtype=torch.float32, generator=g, device=device)
   y = torch.cat([noise, msk, y_latent], dim=0)
 
-  # context: T5 embeddings — bf16 to match real T5 output, ~16 token prompt
+  # context: T5 embeddings — bf16 to match real T5 output, ~16 token prompt, padded to text_len=512
   context = torch.randn(16, 4096, dtype=torch.bfloat16, generator=g, device=device)
+  context = torch.cat([context, context.new_zeros(512 - context.size(0), context.size(1))])
 
-  max_seq_len = lat_f * lat_h * lat_w // (patch_size[1] * patch_size[2])
   t = torch.tensor([TIMESTEP], dtype=torch.float32, device=device)
 
   return {
-    "y": [y],
-    "context": [context],
-    "seq_len": max_seq_len,
-    "t": t,
+    "hidden_states": y.unsqueeze(0).to(dtype),
+    "encoder_hidden_states": context.unsqueeze(0).to(dtype),
+    "timestep": t,
   }
 
 
 def step_once(model, inputs, dtype):
   with torch.inference_mode(), torch.amp.autocast("cuda", dtype=dtype):
-    return model(y=inputs["y"], t=inputs["t"], context=inputs["context"], seq_len=inputs["seq_len"])[0]
+    return model(**inputs)
 
 
 def warmup(model, inputs, dtype, run_count=2):
@@ -142,7 +140,7 @@ def main():
   torch.backends.cudnn.benchmark = True
 
   model = build_model(device, dtype)
-  inputs = build_inputs(device, i2v_A14B)
+  inputs = build_inputs(device, i2v_A14B, dtype)
 
   if args.nsys:
     profile_nsys(model, inputs, dtype)

@@ -7,6 +7,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
 from wan.layers.mlp import MLP
+from wan.layers.mrope import NDRotaryEmbedding
 from wan.layers.visual_embedding import ModulateProjection, PatchEmbed, TimestepEmbedder
 
 from .attention import flash_attention
@@ -174,6 +175,21 @@ class WanCrossAttention(WanSelfAttention):
     return x
 
 
+class WanTransformerBlock(nn.Module):
+  def __init__(
+    self,
+    dim,
+    ffn_dim: int,
+    num_heads: int,
+  ):
+    super().__init__()
+
+    # 1. self attention
+
+    # todo: implemnt kernel for this
+    self.norm1 = None
+
+
 class WanAttentionBlock(nn.Module):
   def __init__(self, dim, ffn_dim, num_heads, window_size=(-1, -1), qk_norm=True, cross_attn_norm=False, eps=1e-6):
     super().__init__()
@@ -234,35 +250,6 @@ class WanAttentionBlock(nn.Module):
       return x
 
     x = cross_attn_ffn(x, context, context_lens, e)
-    return x
-
-
-class Head(nn.Module):
-  def __init__(self, dim, out_dim, patch_size, eps=1e-6):
-    super().__init__()
-    self.dim = dim
-    self.out_dim = out_dim
-    self.patch_size = patch_size
-    self.eps = eps
-
-    # layers
-    out_dim = math.prod(patch_size) * out_dim
-    self.norm = WanLayerNorm(dim, eps)
-    self.head = nn.Linear(dim, out_dim)
-
-    # modulation
-    self.modulation = nn.Parameter(torch.randn(1, 2, dim) / dim**0.5)
-
-  def forward(self, x, e):
-    r"""
-    Args:
-        x(Tensor): Shape [B, L1, C]
-        e(Tensor): Shape [B, L1, C]
-    """
-    assert e.dtype == torch.float32
-    with torch.amp.autocast('cuda', dtype=torch.float32):
-      e = (self.modulation.unsqueeze(0) + e.unsqueeze(2)).chunk(2, dim=2)
-      x = self.head(self.norm(x) * (1 + e[1].squeeze(2)) + e[0].squeeze(2))
     return x
 
 
@@ -393,7 +380,6 @@ class WanModel(ModelMixin, ConfigMixin):
       text_embed_dim=text_dim,
     )
 
-
     # self.text_embedding = nn.Sequential(nn.Linear(text_dim, dim), nn.GELU(approximate='tanh'), nn.Linear(dim, dim))
     # self.time_embedding = nn.Sequential(nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
     # self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
@@ -406,101 +392,103 @@ class WanModel(ModelMixin, ConfigMixin):
       ]
     )
 
-    # head
-    self.head = Head(dim, out_dim, patch_size, eps)
+    # output norm & projection
+    self.norm_out = WanLayerNorm(dim, eps)
 
-    # buffers (don't use register_buffer otherwise dtype will be changed in to())
-    assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
+    self.proj_out = nn.Linear(dim, out_dim * math.prod(patch_size), bias=True)
+    self.scale_shift_table = nn.Parameter(torch.randn(1, 2, dim) / dim**0.5)
+
+    # get rotary embeddings
     d = dim // num_heads
+    self.rope_dim_list = [d - 4 * (d // 6), 2 * (d // 6), 2 * (d // 6)]
+
+    self.rotary_emb = NDRotaryEmbedding(rope_dim_list=self.rope_dim_list, rope_theta=10000, dtype=torch.float64)
+
     self.freqs = torch.cat(
       [rope_params(1024, d - 4 * (d // 6)), rope_params(1024, 2 * (d // 6)), rope_params(1024, 2 * (d // 6))], dim=1
     )
 
   def forward(
     self,
-    y: list[torch.Tensor],
-    t: torch.Tensor,
-    context: list[torch.Tensor],
-    seq_len: int,
+    hidden_states: torch.Tensor,
+    timestep: torch.Tensor,
+    encoder_hidden_states: list[torch.Tensor],
   ):
     r"""
     Forward pass through the diffusion model
 
     Args:
-      y (List[Tensor]):
-        List of full model input tensors, each with shape [C_in, F, H, W]
-      t (Tensor):
-        Diffusion timesteps tensor of shape [B]
-      context (List[Tensor]):
+      hidden_states (Tensor):
+        Full model input tensor of shape [B, C_in, F, H, W]
+      timestep (Tensor):
+        Diffusion timesteps tensor of shape [B, seq_len]. The sequence length
+        used for positional encoding / padding is derived from this shape.
+      encoder_hidden_states (List[Tensor]):
         List of text embeddings each with shape [L, C]
-      seq_len (`int`):
-        Maximum sequence length for positional encoding
 
     Returns:
-      List[Tensor]:
-        List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
+      Tensor:
+        Denoised video tensor of shape [B, C_out, F, H / 8, W / 8]
     """
-    # params
-    if self.freqs.device != self.patch_embedding.proj.weight.device:
-      self.freqs = self.freqs.to(self.patch_embedding.proj.weight.device)
+    orig_dtype = hidden_states.dtype
 
-    # embeddings
-    x = [self.patch_embedding(u.unsqueeze(0)) for u in y]
-    grid_sizes = torch.stack([torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
-    x = [u.flatten(2).transpose(1, 2) for u in x]
-    seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
-    assert seq_lens.max() <= seq_len
-    x = torch.cat([torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))], dim=1) for u in x])
+    batch_size, num_channels, num_frames, height, width = hidden_states.shape
 
-    # time embeddings
-    if t.dim() == 1:
-      t = t.expand(t.size(0), seq_len)
+    p_t, p_h, p_w = self.patch_size
+    post_patch_num_frames = num_frames // p_t
+    post_patch_height = height // p_h
+    post_patch_width = width // p_w
 
-    # context
-    context_lens = None
-    context = torch.stack([torch.cat([u, u.new_zeros(self.text_len - u.size(0), u.size(1))]) for u in context])
-
-    with torch.amp.autocast('cuda', dtype=torch.float32):
-      e, e0, context = self.condition_embedder(t.flatten(), context, timestep_seq_len=seq_len)
-      e0 = e0.unflatten(2, (6, self.dim))
-      assert e.dtype == torch.float32 and e0.dtype == torch.float32
-
-    # arguments
-    kwargs = dict(
-      e=e0, seq_lens=seq_lens, grid_sizes=grid_sizes, freqs=self.freqs, context=context, context_lens=context_lens
+    # rotary emb
+    freqs_cos, freqs_sin = self.rotary_emb.forward_from_grid(
+      (
+        post_patch_num_frames,
+        post_patch_height,
+        post_patch_width,
+      ),
+      start_frame=0,
+      device=hidden_states.device,
     )
 
+    freqs_cis = (freqs_cos.float(), freqs_sin.float()) if freqs_cos is not None else None
+
+    hidden_states = self.patch_embedding(hidden_states)
+    hidden_states = hidden_states.flatten(2).transpose(1, 2)
+
+    if timestep.dim() == 2:
+      ts_seq_len = timestep.shape[1]
+      timestep = timestep.flatten()
+    else:
+      ts_seq_len = None
+
+    temb, timestep_proj, encoder_hidden_states = self.condition_embedder(
+      timestep, encoder_hidden_states, timestep_seq_len=ts_seq_len
+    )
+
+    assert encoder_hidden_states.dtype == orig_dtype
+
+    # transformer blocks
     for block in self.blocks:
-      x = block(x, **kwargs)
+      hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, freqs_cis)
 
-    # head
-    x = self.head(x, e)
+    # output norm, projection & unpatchify
+    if temb.dim() == 3:
+      # batch_size, seq_len, dim
+      shift, scale = (self.scale_shift_table.unsqueeze(0) + temb.unsqueeze(2)).chunk(2, dim=2)
+      shift = shift.squeeze(2)
+      scale = scale.squeeze(2)
+    else:
+      # batch_size, dim
+      shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)
 
-    # unpatchify
-    x = self.unpatchify(x, grid_sizes)
-    return [u.float() for u in x]
+    hidden_states = self.norm_out(hidden_states, shift, scale)
+    hidden_states = self.proj_out(hidden_states)
 
-  def unpatchify(self, x, grid_sizes):
-    r"""
-    Reconstruct video tensors from patch embeddings.
+    hidden_states = hidden_states.reshape(
+      batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1
+    )
 
-    Args:
-      x (List[Tensor]):
-        List of patchified features, each with shape [L, C_out * prod(patch_size)]
-      grid_sizes (Tensor):
-        Original spatial-temporal grid dimensions before patching,
-          shape [B, 3] (3 dimensions correspond to F_patches, H_patches, W_patches)
+    hidden_states = hidden_states.permute(0, 7, 1, 4, 2, 5, 3, 6)
+    output = hidden_states.flatten(6, 7).flatten(4, 5).flatten(2, 3)
 
-    Returns:
-      List[Tensor]:
-        Reconstructed video tensors with shape [C_out, F, H / 8, W / 8]
-    """
-
-    c = self.out_dim
-    out = []
-    for u, v in zip(x, grid_sizes.tolist(), strict=True):
-      u = u[: math.prod(v)].view(*v, *self.patch_size, c)
-      u = torch.einsum('fhwpqrc->cfphqwr', u)
-      u = u.reshape(c, *[i * j for i, j in zip(v, self.patch_size, strict=True)])
-      out.append(u)
-    return out
+    return output
