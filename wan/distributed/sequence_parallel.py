@@ -63,29 +63,23 @@ def rope_apply(x, grid_sizes, freqs):
 
 def sp_dit_forward(
     self,
-    x,
+    y,
     t,
     context,
     seq_len,
-    y=None,
 ):
   """
-  x:              A list of videos each with shape [C, T, H, W].
+  y:              A list of videos each with shape [C, T, H, W].
   t:              [B].
   context:        A list of text embeddings each with shape [L, C].
   """
-  if self.model_type == 'i2v':
-    assert y is not None
   # params
-  device = self.patch_embedding.weight.device
+  device = self.patch_embedding.proj.weight.device
   if self.freqs.device != device:
     self.freqs = self.freqs.to(device)
 
-  if y is not None:
-    x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
-
   # embeddings
-  x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
+  x = [self.patch_embedding(u.unsqueeze(0)) for u in y]
   grid_sizes = torch.stack(
       [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
   x = [u.flatten(2).transpose(1, 2) for u in x]
@@ -99,22 +93,19 @@ def sp_dit_forward(
   # time embeddings
   if t.dim() == 1:
     t = t.expand(t.size(0), seq_len)
-  with torch.amp.autocast('cuda', dtype=torch.float32):
-    bt = t.size(0)
-    t = t.flatten()
-    e = self.time_embedding(
-        sinusoidal_embedding_1d(self.freq_dim,
-                                t).unflatten(0, (bt, seq_len)).float())
-    e0 = self.time_projection(e).unflatten(2, (6, self.dim))
-    assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
   # context
   context_lens = None
-  context = self.text_embedding(
-      torch.stack([
-          torch.cat([u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
-          for u in context
-      ]))
+  context = torch.stack([
+      torch.cat([u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+      for u in context
+  ])
+
+  with torch.amp.autocast('cuda', dtype=torch.float32):
+    e, e0, context = self.condition_embedder(
+        t.flatten(), context, timestep_seq_len=seq_len)
+    e0 = e0.unflatten(2, (6, self.dim))
+    assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
   # Context Parallel
   x = torch.chunk(x, get_world_size(), dim=1)[get_rank()]

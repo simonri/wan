@@ -92,6 +92,22 @@ def _load_i2v_wan_model(checkpoint_path, config):
   if "patch_embedding.bias" in state_dict:
     state_dict["patch_embedding.proj.bias"] = state_dict.pop("patch_embedding.bias")
 
+  key_map = {
+    "text_embedding.0.weight": "condition_embedder.text_embedder.fc_in.weight",
+    "text_embedding.0.bias": "condition_embedder.text_embedder.fc_in.bias",
+    "text_embedding.2.weight": "condition_embedder.text_embedder.fc_out.weight",
+    "text_embedding.2.bias": "condition_embedder.text_embedder.fc_out.bias",
+    "time_embedding.0.weight": "condition_embedder.time_embedder.mlp.fc_in.weight",
+    "time_embedding.0.bias": "condition_embedder.time_embedder.mlp.fc_in.bias",
+    "time_embedding.2.weight": "condition_embedder.time_embedder.mlp.fc_out.weight",
+    "time_embedding.2.bias": "condition_embedder.time_embedder.mlp.fc_out.bias",
+    "time_projection.1.weight": "condition_embedder.time_modulation.linear.weight",
+    "time_projection.1.bias": "condition_embedder.time_modulation.linear.bias",
+  }
+  for old_key, new_key in key_map.items():
+    if old_key in state_dict:
+      state_dict[new_key] = state_dict.pop(old_key)
+
   model.load_state_dict(state_dict, strict=True)
   return model
 
@@ -126,7 +142,9 @@ def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
     delta = torch.matmul(up_weight.float(), down_weight.float()) * scale
 
     if delta.shape != module.weight.shape:
-      raise ValueError(f"LoRA delta shape {tuple(delta.shape)} does not match {module_name}.weight shape {tuple(module.weight.shape)}")
+      raise ValueError(
+        f"LoRA delta shape {tuple(delta.shape)} does not match {module_name}.weight shape {tuple(module.weight.shape)}"
+      )
 
     with torch.no_grad():
       module.weight.add_(delta.to(device=module.weight.device, dtype=module.weight.dtype))
@@ -150,27 +168,27 @@ class WanI2V:
     Initializes the image-to-video generation model components.
 
     Args:
-        config (EasyDict):
-            Object containing model parameters initialized from config.py
-        checkpoint_dir (`str`):
-            Path to directory containing model checkpoints
-        device_id (`int`,  *optional*, defaults to 0):
-            Id of target GPU device
-        rank (`int`,  *optional*, defaults to 0):
-            Process rank for distributed training
-        t5_fsdp (`bool`, *optional*, defaults to False):
-            Enable FSDP sharding for T5 model
-        dit_fsdp (`bool`, *optional*, defaults to False):
-            Enable FSDP sharding for DiT model
-        use_sp (`bool`, *optional*, defaults to False):
-            Enable distribution strategy of sequence parallel.
-        t5_cpu (`bool`, *optional*, defaults to False):
-            Whether to place T5 model on CPU. Only works without t5_fsdp.
-        init_on_cpu (`bool`, *optional*, defaults to True):
-            Enable initializing Transformer Model on CPU. Only works without FSDP or USP.
-        convert_model_dtype (`bool`, *optional*, defaults to False):
-            Convert DiT model parameters dtype to 'config.param_dtype'.
-            Only works without FSDP.
+      config (EasyDict):
+        Object containing model parameters initialized from config.py
+      checkpoint_dir (`str`):
+        Path to directory containing model checkpoints
+      device_id (`int`,  *optional*, defaults to 0):
+        Id of target GPU device
+      rank (`int`,  *optional*, defaults to 0):
+        Process rank for distributed training
+      t5_fsdp (`bool`, *optional*, defaults to False):
+        Enable FSDP sharding for T5 model
+      dit_fsdp (`bool`, *optional*, defaults to False):
+        Enable FSDP sharding for DiT model
+      use_sp (`bool`, *optional*, defaults to False):
+        Enable distribution strategy of sequence parallel.
+      t5_cpu (`bool`, *optional*, defaults to False):
+        Whether to place T5 model on CPU. Only works without t5_fsdp.
+      init_on_cpu (`bool`, *optional*, defaults to True):
+        Enable initializing Transformer Model on CPU. Only works without FSDP or USP.
+      convert_model_dtype (`bool`, *optional*, defaults to False):
+        Convert DiT model parameters dtype to 'config.param_dtype'.
+        Only works without FSDP.
     """
     self.device = torch.device(f"cuda:{device_id}")
     self.config = config
@@ -198,20 +216,31 @@ class WanI2V:
     self.vae_stride = config.vae_stride
     self.patch_size = config.patch_size
     self.vae = Wan2_1_VAE(
-      vae_pth=_resolve_comfyui_file(checkpoint_dir, config.vae_checkpoint, "vae", _COMFYUI_VAE_CHECKPOINTS.get(config.vae_checkpoint, ())), device=self.device
+      vae_pth=_resolve_comfyui_file(
+        checkpoint_dir, config.vae_checkpoint, "vae", _COMFYUI_VAE_CHECKPOINTS.get(config.vae_checkpoint, ())
+      ),
+      device=self.device,
     )
 
     logging.info("Creating WanModel")
     self.low_noise_model = _load_i2v_wan_model(_LOW_NOISE_I2V_CHECKPOINT, config)
     _merge_lora_into_wan_model(self.low_noise_model, _LOW_NOISE_LIGHTNING_LORA)
     self.low_noise_model = self._configure_model(
-      model=self.low_noise_model, use_sp=use_sp, dit_fsdp=dit_fsdp, shard_fn=shard_fn, convert_model_dtype=convert_model_dtype
+      model=self.low_noise_model,
+      use_sp=use_sp,
+      dit_fsdp=dit_fsdp,
+      shard_fn=shard_fn,
+      convert_model_dtype=convert_model_dtype,
     )
 
     self.high_noise_model = _load_i2v_wan_model(_HIGH_NOISE_I2V_CHECKPOINT, config)
     _merge_lora_into_wan_model(self.high_noise_model, _HIGH_NOISE_LIGHTNING_LORA)
     self.high_noise_model = self._configure_model(
-      model=self.high_noise_model, use_sp=use_sp, dit_fsdp=dit_fsdp, shard_fn=shard_fn, convert_model_dtype=convert_model_dtype
+      model=self.high_noise_model,
+      use_sp=use_sp,
+      dit_fsdp=dit_fsdp,
+      shard_fn=shard_fn,
+      convert_model_dtype=convert_model_dtype,
     )
     if use_sp:
       self.sp_size = get_world_size()
@@ -362,7 +391,9 @@ class WanI2V:
     seed = seed if seed >= 0 else random.randint(0, sys.maxsize)
     seed_g = torch.Generator(device=self.device)
     seed_g.manual_seed(seed)
-    noise = torch.randn(16, (F - 1) // self.vae_stride[0] + 1, lat_h, lat_w, dtype=torch.float32, generator=seed_g, device=self.device)
+    noise = torch.randn(
+      16, (F - 1) // self.vae_stride[0] + 1, lat_h, lat_w, dtype=torch.float32, generator=seed_g, device=self.device
+    )
 
     msk = torch.ones(1, F, lat_h, lat_w, device=self.device)
     msk[:, 1:] = 0
@@ -388,9 +419,13 @@ class WanI2V:
 
     y = self.vae.encode(
       [
-        torch.concat([torch.nn.functional.interpolate(img[None].cpu(), size=(h, w), mode='bicubic').transpose(0, 1), torch.zeros(3, F - 1, h, w)], dim=1).to(
-          self.device
-        )
+        torch.concat(
+          [
+            torch.nn.functional.interpolate(img[None].cpu(), size=(h, w), mode='bicubic').transpose(0, 1),
+            torch.zeros(3, F - 1, h, w),
+          ],
+          dim=1,
+        ).to(self.device)
       ]
     )[0]
     y = torch.concat([msk, y])
@@ -412,11 +447,15 @@ class WanI2V:
       boundary = self.boundary * self.num_train_timesteps
 
       if sample_solver == 'unipc':
-        sample_scheduler = FlowUniPCMultistepScheduler(num_train_timesteps=self.num_train_timesteps, shift=1, use_dynamic_shifting=False)
+        sample_scheduler = FlowUniPCMultistepScheduler(
+          num_train_timesteps=self.num_train_timesteps, shift=1, use_dynamic_shifting=False
+        )
         sample_scheduler.set_timesteps(sampling_steps, device=self.device, shift=shift)
         timesteps = sample_scheduler.timesteps
       elif sample_solver == 'dpm++':
-        sample_scheduler = FlowDPMSolverMultistepScheduler(num_train_timesteps=self.num_train_timesteps, shift=1, use_dynamic_shifting=False)
+        sample_scheduler = FlowDPMSolverMultistepScheduler(
+          num_train_timesteps=self.num_train_timesteps, shift=1, use_dynamic_shifting=False
+        )
         sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
         timesteps, _ = retrieve_timesteps(sample_scheduler, device=self.device, sigmas=sampling_sigmas)
       else:
@@ -428,20 +467,18 @@ class WanI2V:
       arg_c = {
         'context': [context[0]],
         'seq_len': max_seq_len,
-        'y': [y],
       }
 
       arg_null = {
         'context': context_null,
         'seq_len': max_seq_len,
-        'y': [y],
       }
 
       if offload_model:
         torch.cuda.empty_cache()
 
       for _, t in enumerate(tqdm(timesteps)):
-        latent_model_input = [latent.to(self.device)]
+        latent_model_input = [torch.cat([latent.to(self.device), y], dim=0)]
         timestep = [t]
 
         timestep = torch.stack(timestep).to(self.device)
@@ -449,15 +486,17 @@ class WanI2V:
         model = self._prepare_model_for_timestep(t, boundary, offload_model)
         sample_guide_scale = guide_scale[1] if t.item() >= boundary else guide_scale[0]
 
-        noise_pred_cond = model(latent_model_input, t=timestep, **arg_c)[0]
+        noise_pred_cond = model(y=latent_model_input, t=timestep, **arg_c)[0]
         if offload_model:
           torch.cuda.empty_cache()
-        noise_pred_uncond = model(latent_model_input, t=timestep, **arg_null)[0]
+        noise_pred_uncond = model(y=latent_model_input, t=timestep, **arg_null)[0]
         if offload_model:
           torch.cuda.empty_cache()
         noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_cond - noise_pred_uncond)
 
-        temp_x0 = sample_scheduler.step(noise_pred.unsqueeze(0), t, latent.unsqueeze(0), return_dict=False, generator=seed_g)[0]
+        temp_x0 = sample_scheduler.step(
+          noise_pred.unsqueeze(0), t, latent.unsqueeze(0), return_dict=False, generator=seed_g
+        )[0]
         latent = temp_x0.squeeze(0)
 
         x0 = [latent]
