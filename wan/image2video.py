@@ -413,10 +413,13 @@ class WanI2V:
         noise_pred_cond = model(latent_model_input, timestep, encoder_hidden_states_cond).squeeze(0)
         if offload_model:
           torch.cuda.empty_cache()
-        noise_pred_uncond = model(latent_model_input, timestep, encoder_hidden_states_uncond).squeeze(0)
-        if offload_model:
-          torch.cuda.empty_cache()
-        noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_cond - noise_pred_uncond)
+        if sample_guide_scale == 1.0:
+          noise_pred = noise_pred_cond
+        else:
+          noise_pred_uncond = model(latent_model_input, timestep, encoder_hidden_states_uncond).squeeze(0)
+          if offload_model:
+            torch.cuda.empty_cache()
+          noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_cond - noise_pred_uncond)
 
         temp_x0 = sample_scheduler.step(
           noise_pred.unsqueeze(0), t, latent.unsqueeze(0), return_dict=False, generator=seed_g
