@@ -77,24 +77,6 @@ def _parse_args():
     help="LoRA(s) to merge into the high-noise DiT. Each entry is PATH or PATH:STRENGTH (default 1.0).",
   )
 
-  # animate
-  parser.add_argument("--src_root_path", type=str, default=None, help="The file of the process output path. Default None.")
-  parser.add_argument("--refert_num", type=int, default=77, help="How many frames used for temporal guidance. Recommended to be 1 or 5.")
-  parser.add_argument("--replace_flag", action="store_true", default=False, help="Whether to use replace.")
-  parser.add_argument("--use_relighting_lora", action="store_true", default=False, help="Whether to use relighting lora.")
-
-  # following args only works for s2v
-  parser.add_argument("--num_clip", type=int, default=None, help="Number of video clips to generate, the whole video will not exceed the length of audio.")
-  parser.add_argument("--audio", type=str, default=None, help="Path to the audio file, e.g. wav, mp3")
-  parser.add_argument("--enable_tts", action="store_true", default=False, help="Use CosyVoice to synthesis audio")
-  parser.add_argument(
-    "--tts_prompt_audio", type=str, default=None, help="Path to the tts prompt audio file, e.g. wav, mp3. Must be greater than 16khz, and between 5s to 15s."
-  )
-  parser.add_argument("--tts_prompt_text", type=str, default=None, help="Content to the tts prompt audio. If provided, must exactly match tts_prompt_audio")
-  parser.add_argument("--tts_text", type=str, default=None, help="Text wish to synthesize")
-  parser.add_argument("--pose_video", type=str, default=None, help="Provide Dw-pose sequence to do Pose Driven")
-  parser.add_argument("--start_from_ref", action="store_true", default=False, help="whether set the reference image as the starting point for generation")
-  parser.add_argument("--infer_frames", type=int, default=80, help="Number of frames per clip, 48 or 80 or others (must be multiple of 4) for 14B s2v")
   args = parser.parse_args()
   _validate_args(args)
 
