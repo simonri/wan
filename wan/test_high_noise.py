@@ -7,12 +7,9 @@ from wan.configs.wan_i2v_A14B import i2v_A14B
 
 from .bench.layer_timer import LayerTimer
 from .bench.nvtx_marker import NVTXMarker, cuda_profiler_start, cuda_profiler_stop
-from .image2video import (
-  _HIGH_NOISE_I2V_CHECKPOINT,
-  _HIGH_NOISE_LIGHTNING_LORA,
-  _load_i2v_wan_model,
-  _merge_lora_into_wan_model,
-)
+from .image2video import _HIGH_NOISE_I2V_CHECKPOINT, _load_i2v_wan_model, _merge_lora_into_wan_model
+
+_HIGH_NOISE_LIGHTNING_LORA = "models/loras/lightning_high_noise_model.safetensors"
 
 IMAGE_SIZE = (480, 832)
 FRAME_NUM = 81

@@ -33,6 +33,7 @@ dependencies = [
     "flashinfer-python",
     "ruff>=0.15.12",
     "triton>=3.7.0",
+    "flash-attn-4>=4.0.0b12",
 ]
 
 [project.optional-dependencies]

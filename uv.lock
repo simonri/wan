@@ -406,6 +406,24 @@ requires-dist = [
 ]
 
 [[package]]
+name = "flash-attn-4"
+version = "4.0.0b12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-tvm-ffi", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "einops", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cutlass-dsl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "quack-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch-c-dlpack-ext", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9f/92/d8e11ce2a492740ce059cdc048e53d92654ecdf0e3805eb242c83a794eb6/flash_attn_4-4.0.0b12.tar.gz", hash = "sha256:8b95c74347874e4642036b5247a4dbc8780eb1d9882d7ecd420d49e90abbd4de", size = 308556, upload-time = "2026-05-06T08:57:57.354Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/54/1724780fc11afb947947c1373c6072bc781035617b4948bd17248ff04fe9/flash_attn_4-4.0.0b12-py3-none-any.whl", hash = "sha256:6f4f550b28e6c08e4f73f01137410d7c7c35dfa51b1e9d26b3a6a53381988540", size = 330990, upload-time = "2026-05-06T08:57:55.914Z" },
+]
+
+[[package]]
 name = "flashinfer-python"
 version = "0.6.7.dev20260406"
 source = { registry = "https://flashinfer.ai/whl/nightly/" }
@@ -1133,6 +1151,22 @@ wheels = [
 ]
 
 [[package]]
+name = "quack-kernels"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-tvm-ffi", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "einops", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cutlass-dsl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch-c-dlpack-ext", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2a/58/58b82e91b236539f424ff5681e7095b1f2860ddfb7778fe0be14d8fb58de/quack_kernels-0.4.1.tar.gz", hash = "sha256:9d7d6ba412bc0c8a9b1331c52a73db76280adb9dc2f2750df4851ddabef1466b", size = 274766, upload-time = "2026-04-30T14:37:55.65Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/e4/a6c3bbbe3d4242fa412454b8e8069a079e500be331aecf8f2aa666164e9c/quack_kernels-0.4.1-py3-none-any.whl", hash = "sha256:c1c8df2935bf5156ec47d2c5384ac08b411fd0ee702d80ae916dbf6d6f5ae813", size = 260827, upload-time = "2026-04-30T14:37:54.584Z" },
+]
+
+[[package]]
 name = "regex"
 version = "2025.9.1"
 source = { registry = "https://download.pytorch.org/whl/nightly/cu128" }
@@ -1270,6 +1304,21 @@ wheels = [
 ]
 
 [[package]]
+name = "torch-c-dlpack-ext"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/de/921b6491efce5c389a5ef9bbed3d2d6660005840dae488124173180859ab/torch_c_dlpack_ext-0.1.5.tar.gz", hash = "sha256:d06f0357d575d22a168cc77acb9020fc4bae30968ceb6718a055dcbe92bacabe", size = 12913, upload-time = "2026-01-12T11:25:08.484Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a1/e9/a1f9584a3af4ac6ae5ad5cf86927d8c3a9b6bb50d54e54d19313411216a0/torch_c_dlpack_ext-0.1.5-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c7468df84ec152d930fbc3acf460c44a60b3462b95af3d3a676d133629c7e176", size = 879488, upload-time = "2026-01-12T11:24:34.837Z" },
+    { url = "https://files.pythonhosted.org/packages/64/5c/3e1382a620824f92920ab3fae132d8fb4e85898284c99e0c6a7764e452ce/torch_c_dlpack_ext-0.1.5-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3448c4f0d64104d0b2e58080a7efa72304a04960c18f338024b80b13cd3eca26", size = 897768, upload-time = "2026-01-12T11:24:41.209Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/79/a914539b4785f3e44f891aa012a886edb8bc10fe081c440981c57543ce21/torch_c_dlpack_ext-0.1.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e6f9da4bb9af70e27facc777458be62e10dbbbddda7672d16138db0553c5a524", size = 897846, upload-time = "2026-01-12T11:24:48.168Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/68/f434b48700f3e04f33882f54d8d3910327b935f55e14ec49da7d607bf470/torch_c_dlpack_ext-0.1.5-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:debe62e5ef93e631065d6b9f6e60d3d39bae6b89fa1b25d9523f40b3efbf8aba", size = 755004, upload-time = "2026-01-12T11:24:54.004Z" },
+]
+
+[[package]]
 name = "torchvision"
 version = "0.27.0.dev20260407+cu128"
 source = { registry = "https://download.pytorch.org/whl/nightly/cu128" }
@@ -1353,6 +1402,7 @@ dependencies = [
     { name = "easydict", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "einops", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flash-attn-3", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "flash-attn-4", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flashinfer-python", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "ftfy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "imageio", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1389,6 +1439,7 @@ requires-dist = [
     { name = "einops" },
     { name = "flake8", marker = "extra == 'dev'" },
     { name = "flash-attn-3", url = "https://github.com/simonri/flash-attention-3-h100/releases/download/v1.0.0/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" },
+    { name = "flash-attn-4", specifier = ">=4.0.0b12" },
     { name = "flashinfer-python", index = "https://flashinfer.ai/whl/nightly/" },
     { name = "ftfy" },
     { name = "huggingface-hub", extras = ["cli"], marker = "extra == 'dev'" },

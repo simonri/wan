@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from wan.layers.attention.attention_backend import AttentionImpl
-from wan.layers.attention.sdpa import SDPABackend
+from wan.layers.attention.flash_attn import FlashAttentionBackend
 
 
 class USPAttention(nn.Module):
@@ -18,7 +18,7 @@ class USPAttention(nn.Module):
     super().__init__()
 
     dtype = torch.get_default_dtype()
-    attn_backend = SDPABackend()
+    attn_backend = FlashAttentionBackend()
 
     impl_cls: type[AttentionImpl] = attn_backend.get_impl_cls()
     self.attn_impl = impl_cls(
