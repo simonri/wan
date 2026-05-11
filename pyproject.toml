@@ -30,6 +30,7 @@ dependencies = [
     "imageio-ffmpeg",
     "numpy>=1.23.5,<2",
     "flash_attn_3",
+    "flashinfer-python",
     "ruff>=0.15.12",
     "triton>=3.7.0",
 ]
@@ -56,10 +57,16 @@ discord = "https://discord.gg/p5XbdQV7"
 name = "pytorch-nightly-cu128"
 url = "https://download.pytorch.org/whl/nightly/cu128"
 
+[[tool.uv.index]]
+name = "flashinfer-nightly"
+url = "https://flashinfer.ai/whl/nightly/"
+explicit = true
+
 [tool.uv.sources]
 torch = { index = "pytorch-nightly-cu128" }
 torchvision = { index = "pytorch-nightly-cu128" }
 flash_attn_3 = { url = "https://github.com/simonri/flash-attention-3-h100/releases/download/v1.0.0/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" }
+flashinfer-python = { index = "flashinfer-nightly" }
 
 [tool.uv]
 prerelease = "allow"

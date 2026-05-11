@@ -4,6 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+export CUDA_HOME="$PWD/.cuda-nvcc"
+export PATH="$CUDA_HOME/bin:$PATH"
+
 nsys profile \
   -o traces/highnoise \
   -t cuda,nvtx,cublas,cudnn \

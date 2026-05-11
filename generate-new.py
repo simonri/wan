@@ -1,20 +1,17 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import argparse
 import logging
-import os
 import random
 import sys
 import warnings
 from datetime import datetime
 
 import torch
-import torch.distributed as dist
 from PIL import Image
 
 import wan
 from wan.configs import MAX_AREA_CONFIGS, SIZE_CONFIGS, SUPPORTED_SIZES
 from wan.configs.wan_i2v_A14B import i2v_A14B
-from wan.distributed.util import init_distributed_group
 from wan.utils.utils import save_video, str2bool
 
 warnings.filterwarnings('ignore')
@@ -57,12 +54,8 @@ def _parse_args():
   parser.add_argument("--frame_num", type=int, default=None, help="How many frames of video are generated. The number should be 4n+1")
   parser.add_argument("--ckpt_dir", type=str, default=None, help="The path to the checkpoint directory.")
   parser.add_argument(
-    "--offload_model", type=str2bool, default=None, help="Whether to offload the model to CPU after each model forward, reducing GPU memory usage."
+    "--offload_model", type=str2bool, default=True, help="Whether to offload the model to CPU after each model forward, reducing GPU memory usage."
   )
-  parser.add_argument("--ulysses_size", type=int, default=1, help="The size of the ulysses parallelism in DiT.")
-  parser.add_argument("--t5_fsdp", action="store_true", default=False, help="Whether to use FSDP for T5.")
-  parser.add_argument("--t5_cpu", action="store_true", default=False, help="Whether to place T5 model on CPU.")
-  parser.add_argument("--dit_fsdp", action="store_true", default=False, help="Whether to use FSDP for DiT.")
   parser.add_argument("--save_file", type=str, default=None, help="The file to save the generated video to.")
   parser.add_argument("--prompt", type=str, default=None, help="The prompt to generate the video from.")
   parser.add_argument("--base_seed", type=int, default=-1, help="The seed to use for generating the video.")
@@ -71,7 +64,18 @@ def _parse_args():
   parser.add_argument("--sample_steps", type=int, default=None, help="The sampling steps.")
   parser.add_argument("--sample_shift", type=float, default=None, help="Sampling shift factor for flow matching schedulers.")
   parser.add_argument("--sample_guide_scale", type=float, default=None, help="Classifier free guidance scale.")
-  parser.add_argument("--convert_model_dtype", action="store_true", default=False, help="Whether to convert model paramerters dtype.")
+  parser.add_argument(
+    "--lora_low",
+    nargs='*',
+    default=[],
+    help="LoRA(s) to merge into the low-noise DiT. Each entry is PATH or PATH:STRENGTH (default 1.0).",
+  )
+  parser.add_argument(
+    "--lora_high",
+    nargs='*',
+    default=[],
+    help="LoRA(s) to merge into the high-noise DiT. Each entry is PATH or PATH:STRENGTH (default 1.0).",
+  )
 
   # animate
   parser.add_argument("--src_root_path", type=str, default=None, help="The file of the process output path. Default None.")
@@ -97,47 +101,27 @@ def _parse_args():
   return args
 
 
-def _init_logging(rank):
-  # logging
-  if rank == 0:
-    # set format
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s", handlers=[logging.StreamHandler(stream=sys.stdout)])
-  else:
-    logging.basicConfig(level=logging.ERROR)
+def _parse_lora_spec(spec):
+  """Parse 'PATH' or 'PATH:STRENGTH' into (path, strength)."""
+  if ':' in spec:
+    path, _, strength = spec.rpartition(':')
+    try:
+      return path, float(strength)
+    except ValueError:
+      pass  # colon was part of the path, not a strength suffix
+  return spec, 1.0
 
 
 def generate(args):
-  rank = int(os.getenv("RANK", 0))
-  world_size = int(os.getenv("WORLD_SIZE", 1))
-  local_rank = int(os.getenv("LOCAL_RANK", 0))
-  device = local_rank
-  _init_logging(rank)
-
-  if args.offload_model is None:
-    args.offload_model = False if world_size > 1 else True
-    logging.info(f"offload_model is not specified, set to {args.offload_model}.")
-  if world_size > 1:
-    torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl", init_method="env://", rank=rank, world_size=world_size)
-  else:
-    assert not (args.t5_fsdp or args.dit_fsdp), "t5_fsdp and dit_fsdp are not supported in non-distributed environments."
-    assert not (args.ulysses_size > 1), "sequence parallel are not supported in non-distributed environments."
-
-  if args.ulysses_size > 1:
-    assert args.ulysses_size == world_size, "The number of ulysses_size should be equal to the world size."
-    init_distributed_group()
+  logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s: %(message)s",
+    handlers=[logging.StreamHandler(stream=sys.stdout)],
+  )
 
   cfg = i2v_A14B
-  if args.ulysses_size > 1:
-    assert cfg.num_heads % args.ulysses_size == 0, f"`{cfg.num_heads=}` cannot be divided evenly by `{args.ulysses_size=}`."
-
   logging.info(f"Generation job args: {args}")
   logging.info(f"Generation model config: {cfg}")
-
-  if dist.is_initialized():
-    base_seed = [args.base_seed] if rank == 0 else [None]
-    dist.broadcast_object_list(base_seed, src=0)
-    args.base_seed = base_seed[0]
 
   logging.info(f"Input prompt: {args.prompt}")
   img = None
@@ -145,17 +129,18 @@ def generate(args):
     img = Image.open(args.image).convert("RGB")
     logging.info(f"Input image: {args.image}")
 
+  low_loras = [_parse_lora_spec(s) for s in args.lora_low]
+  high_loras = [_parse_lora_spec(s) for s in args.lora_high]
+  for tag, items in [("low", low_loras), ("high", high_loras)]:
+    for path, strength in items:
+      logging.info(f"LoRA ({tag}, strength={strength}): {path}")
+
   logging.info("Creating WanI2V pipeline.")
   wan_i2v = wan.WanI2V(
     config=cfg,
     checkpoint_dir=args.ckpt_dir,
-    device_id=device,
-    rank=rank,
-    t5_fsdp=args.t5_fsdp,
-    dit_fsdp=args.dit_fsdp,
-    use_sp=(args.ulysses_size > 1),
-    t5_cpu=args.t5_cpu,
-    convert_model_dtype=args.convert_model_dtype,
+    low_noise_loras=low_loras,
+    high_noise_loras=high_loras,
   )
   logging.info("Generating video ...")
   video = wan_i2v.generate(
@@ -171,24 +156,17 @@ def generate(args):
     offload_model=args.offload_model,
   )
 
-  if rank == 0:
-    if args.save_file is None:
-      formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-      formatted_prompt = args.prompt.replace(" ", "_").replace("/", "_")[:50]
-      suffix = '.mp4'
-      args.save_file = (
-        f"{args.size.replace('*', 'x') if sys.platform == 'win32' else args.size}_{args.ulysses_size}_{formatted_prompt}_{formatted_time}" + suffix
-      )
+  if args.save_file is None:
+    formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    formatted_prompt = args.prompt.replace(" ", "_").replace("/", "_")[:50]
+    size = args.size.replace('*', 'x') if sys.platform == 'win32' else args.size
+    args.save_file = f"{size}_{formatted_prompt}_{formatted_time}.mp4"
 
-    logging.info(f"Saving generated video to {args.save_file}")
-    save_video(tensor=video[None], save_file=args.save_file, fps=cfg.sample_fps, nrow=1, normalize=True, value_range=(-1, 1))
+  logging.info(f"Saving generated video to {args.save_file}")
+  save_video(tensor=video[None], save_file=args.save_file, fps=cfg.sample_fps, nrow=1, normalize=True, value_range=(-1, 1))
   del video
 
   torch.cuda.synchronize()
-  if dist.is_initialized():
-    dist.barrier()
-    dist.destroy_process_group()
-
   logging.info("Finished.")
 
 

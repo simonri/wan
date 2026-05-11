@@ -10,3 +10,4 @@ models
 encoded.pt
 *.mp4
 traces/
+.cuda-nvcc

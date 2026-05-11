@@ -1,24 +1,17 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import gc
 import logging
-import math
 import os
 import random
 import sys
-import types
-from contextlib import contextmanager
-from functools import partial
 
 import numpy as np
 import torch
-import torch.distributed as dist
 import torchvision.transforms.functional as TF
+from accelerate import init_empty_weights
 from safetensors.torch import load_file as load_safetensors_file
 from tqdm import tqdm
 
-from .distributed.fsdp import shard_model
-from .distributed.sequence_parallel import sp_attn_forward, sp_dit_forward
-from .distributed.util import get_world_size
 from .modules.model import WanModel
 from .modules.t5 import T5EncoderModel
 from .modules.vae2_1 import Wan2_1_VAE
@@ -27,8 +20,6 @@ from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 _LOW_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors"
 _HIGH_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors"
-_LOW_NOISE_LIGHTNING_LORA = "models/loras/lightning_low_noise_model.safetensors"
-_HIGH_NOISE_LIGHTNING_LORA = "models/loras/lightning_high_noise_model.safetensors"
 
 
 _COMFYUI_VAE_CHECKPOINTS = {
@@ -61,22 +52,19 @@ def _resolve_t5_tokenizer_path(checkpoint_dir, tokenizer_name):
 
 
 def _create_i2v_wan_model(config):
-  return WanModel(
-    model_type=getattr(config, "model_type", "i2v"),
-    patch_size=config.patch_size,
-    text_len=config.text_len,
-    in_dim=getattr(config, "in_dim", 36),
-    dim=config.dim,
-    ffn_dim=config.ffn_dim,
-    freq_dim=config.freq_dim,
-    out_dim=getattr(config, "out_dim", 16),
-    num_heads=config.num_heads,
-    num_layers=config.num_layers,
-    window_size=config.window_size,
-    qk_norm=config.qk_norm,
-    cross_attn_norm=config.cross_attn_norm,
-    eps=config.eps,
-  )
+  with init_empty_weights():
+    return WanModel(
+      patch_size=config.patch_size,
+      in_dim=getattr(config, "in_dim", 36),
+      dim=config.dim,
+      ffn_dim=config.ffn_dim,
+      freq_dim=config.freq_dim,
+      out_dim=getattr(config, "out_dim", 16),
+      num_heads=config.num_heads,
+      num_layers=config.num_layers,
+      qk_norm=config.qk_norm,
+      eps=config.eps,
+    )
 
 
 def _load_i2v_wan_model(checkpoint_path, config):
@@ -86,6 +74,8 @@ def _load_i2v_wan_model(checkpoint_path, config):
   logging.info(f"Loading WanModel from safetensors checkpoint: {checkpoint_path}")
   model = _create_i2v_wan_model(config)
   state_dict = load_safetensors_file(checkpoint_path, device="cpu")
+  for k in list(state_dict.keys()):
+    state_dict[k] = state_dict.pop(k).to(config.param_dtype)
 
   if "patch_embedding.weight" in state_dict:
     state_dict["patch_embedding.proj.weight"] = state_dict.pop("patch_embedding.weight")
@@ -111,8 +101,75 @@ def _load_i2v_wan_model(checkpoint_path, config):
     if old_key in state_dict:
       state_dict[new_key] = state_dict.pop(old_key)
 
-  model.load_state_dict(state_dict, strict=True)
+  # Per-block remap: legacy WanAttentionBlock → WanTransformerBlock
+  block_suffix_map = {
+    "self_attn.q.weight": "to_q.weight",
+    "self_attn.q.bias": "to_q.bias",
+    "self_attn.k.weight": "to_k.weight",
+    "self_attn.k.bias": "to_k.bias",
+    "self_attn.v.weight": "to_v.weight",
+    "self_attn.v.bias": "to_v.bias",
+    "self_attn.o.weight": "to_out.weight",
+    "self_attn.o.bias": "to_out.bias",
+    "self_attn.norm_q.weight": "norm_q.weight",
+    "self_attn.norm_k.weight": "norm_k.weight",
+    "modulation": "scale_shift_table",
+    "ffn.0.weight": "ffn.fc_in.weight",
+    "ffn.0.bias": "ffn.fc_in.bias",
+    "ffn.2.weight": "ffn.fc_out.weight",
+    "ffn.2.bias": "ffn.fc_out.bias",
+    "norm3.weight": "self_attn_residual_norm.norm.weight",
+    "norm3.bias": "self_attn_residual_norm.norm.bias",
+    "cross_attn.q.weight": "attn2.to_q.weight",
+    "cross_attn.q.bias": "attn2.to_q.bias",
+    "cross_attn.k.weight": "attn2.to_k.weight",
+    "cross_attn.k.bias": "attn2.to_k.bias",
+    "cross_attn.v.weight": "attn2.to_v.weight",
+    "cross_attn.v.bias": "attn2.to_v.bias",
+    "cross_attn.o.weight": "attn2.to_out.weight",
+    "cross_attn.o.bias": "attn2.to_out.bias",
+    "cross_attn.norm_q.weight": "attn2.norm_q.weight",
+    "cross_attn.norm_k.weight": "attn2.norm_k.weight",
+  }
+  for i in range(config.num_layers):
+    for old_suffix, new_suffix in block_suffix_map.items():
+      old_key = f"blocks.{i}.{old_suffix}"
+      if old_key in state_dict:
+        state_dict[f"blocks.{i}.{new_suffix}"] = state_dict.pop(old_key)
+
+  model.load_state_dict(state_dict, strict=True, assign=True)
   return model
+
+
+_LORA_BLOCK_MODULE_MAP = {
+  "self_attn.q": "to_q",
+  "self_attn.k": "to_k",
+  "self_attn.v": "to_v",
+  "self_attn.o": "to_out",
+  "cross_attn.q": "attn2.to_q",
+  "cross_attn.k": "attn2.to_k",
+  "cross_attn.v": "attn2.to_v",
+  "cross_attn.o": "attn2.to_out",
+  "ffn.0": "ffn.fc_in",
+  "ffn.2": "ffn.fc_out",
+}
+# kohya/sd-scripts encode the same paths with underscores instead of dots
+_LORA_BLOCK_MODULE_MAP_KOHYA = {k.replace(".", "_"): v for k, v in _LORA_BLOCK_MODULE_MAP.items()}
+
+
+def _remap_lora_module_name(name):
+  # diffusion_model.blocks.N.<suffix.with.dots>
+  if name.startswith("blocks."):
+    rest = name.split(".", 2)
+    if len(rest) == 3:
+      return f"{rest[0]}.{rest[1]}.{_LORA_BLOCK_MODULE_MAP.get(rest[2], rest[2])}"
+  # lora_unet_blocks_N_<suffix_with_underscores>  (already stripped of lora_unet_)
+  if name.startswith("blocks_"):
+    parts = name.split("_", 2)
+    if len(parts) == 3 and parts[1].isdigit():
+      suffix = _LORA_BLOCK_MODULE_MAP_KOHYA.get(parts[2], parts[2].replace("_", "."))
+      return f"blocks.{parts[1]}.{suffix}"
+  return name
 
 
 def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
@@ -133,7 +190,8 @@ def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
     if up_key not in state_dict:
       raise KeyError(f"Missing LoRA up weight for {key}: expected {up_key}")
 
-    module_name = prefix.removeprefix("diffusion_model.")
+    stripped = prefix.removeprefix("diffusion_model.").removeprefix("lora_unet_")
+    module_name = _remap_lora_module_name(stripped)
     module = model.get_submodule(module_name)
     if not hasattr(module, "weight"):
       raise TypeError(f"LoRA target module has no weight parameter: {module_name}")
@@ -154,66 +212,26 @@ def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
 
 
 class WanI2V:
-  def __init__(
-    self,
-    config,
-    checkpoint_dir,
-    device_id=0,
-    rank=0,
-    t5_fsdp=False,
-    dit_fsdp=False,
-    use_sp=False,
-    t5_cpu=False,
-    init_on_cpu=True,
-    convert_model_dtype=False,
-  ):
-    r"""
-    Initializes the image-to-video generation model components.
-
-    Args:
-      config (EasyDict):
-        Object containing model parameters initialized from config.py
-      checkpoint_dir (`str`):
-        Path to directory containing model checkpoints
-      device_id (`int`,  *optional*, defaults to 0):
-        Id of target GPU device
-      rank (`int`,  *optional*, defaults to 0):
-        Process rank for distributed training
-      t5_fsdp (`bool`, *optional*, defaults to False):
-        Enable FSDP sharding for T5 model
-      dit_fsdp (`bool`, *optional*, defaults to False):
-        Enable FSDP sharding for DiT model
-      use_sp (`bool`, *optional*, defaults to False):
-        Enable distribution strategy of sequence parallel.
-      t5_cpu (`bool`, *optional*, defaults to False):
-        Whether to place T5 model on CPU. Only works without t5_fsdp.
-      init_on_cpu (`bool`, *optional*, defaults to True):
-        Enable initializing Transformer Model on CPU. Only works without FSDP or USP.
-      convert_model_dtype (`bool`, *optional*, defaults to False):
-        Convert DiT model parameters dtype to 'config.param_dtype'.
-        Only works without FSDP.
+  def __init__(self, config, checkpoint_dir, low_noise_loras=(), high_noise_loras=()):
     """
-    self.device = torch.device(f"cuda:{device_id}")
+    Args:
+      low_noise_loras / high_noise_loras: iterable of (path, strength) tuples to merge
+        into the respective DiT before inference.
+    """
+    self.device = torch.device("cuda:0")
     self.config = config
-    self.rank = rank
-    self.t5_cpu = t5_cpu
-    self.init_on_cpu = init_on_cpu
 
     self.num_train_timesteps = config.num_train_timesteps
     self.boundary = config.boundary
     self.param_dtype = config.param_dtype
+    self.text_len = config.text_len
 
-    if t5_fsdp or dit_fsdp or use_sp:
-      self.init_on_cpu = False
-
-    shard_fn = partial(shard_model, device_id=device_id)
     self.text_encoder = T5EncoderModel(
       text_len=config.text_len,
       dtype=config.t5_dtype,
       device=torch.device('cpu'),
       checkpoint_path=_resolve_comfyui_file(checkpoint_dir, config.t5_checkpoint, "text_encoders"),
       tokenizer_path=_resolve_t5_tokenizer_path(checkpoint_dir, config.t5_tokenizer),
-      shard_fn=shard_fn if t5_fsdp else None,
     )
 
     self.vae_stride = config.vae_stride
@@ -226,103 +244,30 @@ class WanI2V:
     )
 
     logging.info("Creating WanModel")
-    self.low_noise_model = _load_i2v_wan_model(_LOW_NOISE_I2V_CHECKPOINT, config)
-    _merge_lora_into_wan_model(self.low_noise_model, _LOW_NOISE_LIGHTNING_LORA)
-    self.low_noise_model = self._configure_model(
-      model=self.low_noise_model,
-      use_sp=use_sp,
-      dit_fsdp=dit_fsdp,
-      shard_fn=shard_fn,
-      convert_model_dtype=convert_model_dtype,
-    )
-
-    self.high_noise_model = _load_i2v_wan_model(_HIGH_NOISE_I2V_CHECKPOINT, config)
-    _merge_lora_into_wan_model(self.high_noise_model, _HIGH_NOISE_LIGHTNING_LORA)
-    self.high_noise_model = self._configure_model(
-      model=self.high_noise_model,
-      use_sp=use_sp,
-      dit_fsdp=dit_fsdp,
-      shard_fn=shard_fn,
-      convert_model_dtype=convert_model_dtype,
-    )
-    if use_sp:
-      self.sp_size = get_world_size()
-    else:
-      self.sp_size = 1
+    self.low_noise_model = self._load_dit(_LOW_NOISE_I2V_CHECKPOINT, low_noise_loras, config)
+    self.high_noise_model = self._load_dit(_HIGH_NOISE_I2V_CHECKPOINT, high_noise_loras, config)
 
     self.sample_neg_prompt = config.sample_neg_prompt
 
-  def _configure_model(self, model, use_sp, dit_fsdp, shard_fn, convert_model_dtype):
-    """
-    Configures a model object. This includes setting evaluation modes,
-    applying distributed parallel strategy, and handling device placement.
-
-    Args:
-        model (torch.nn.Module):
-            The model instance to configure.
-        use_sp (`bool`):
-            Enable distribution strategy of sequence parallel.
-        dit_fsdp (`bool`):
-            Enable FSDP sharding for DiT model.
-        shard_fn (callable):
-            The function to apply FSDP sharding.
-        convert_model_dtype (`bool`):
-            Convert DiT model parameters dtype to 'config.param_dtype'.
-            Only works without FSDP.
-
-    Returns:
-        torch.nn.Module:
-            The configured model.
-    """
+  def _load_dit(self, checkpoint, loras, config):
+    model = _load_i2v_wan_model(checkpoint, config)
+    for lora_path, strength in loras:
+      _merge_lora_into_wan_model(model, lora_path, strength=strength)
     model.eval().requires_grad_(False)
-
-    if use_sp:
-      for block in model.blocks:
-        block.self_attn.forward = types.MethodType(sp_attn_forward, block.self_attn)
-      model.forward = types.MethodType(sp_dit_forward, model)
-
-    if dist.is_initialized():
-      dist.barrier()
-
-    if dit_fsdp:
-      model = shard_fn(model)
-    else:
-      if convert_model_dtype:
-        model.to(self.param_dtype)
-      if not self.init_on_cpu:
-        model.to(self.device)
-
     return model
 
   def _prepare_model_for_timestep(self, t, boundary, offload_model):
-    r"""
-    Prepares and returns the required model for the current timestep.
-
-    Args:
-        t (torch.Tensor):
-            current timestep.
-        boundary (`int`):
-            The timestep threshold. If `t` is at or above this value,
-            the `high_noise_model` is considered as the required model.
-        offload_model (`bool`):
-            A flag intended to control the offloading behavior.
-
-    Returns:
-        torch.nn.Module:
-            The active model on the target device for the current timestep.
-    """
     if t.item() >= boundary:
-      required_model_name = 'high_noise_model'
-      offload_model_name = 'low_noise_model'
+      required_name, offload_name = 'high_noise_model', 'low_noise_model'
     else:
-      required_model_name = 'low_noise_model'
-      offload_model_name = 'high_noise_model'
-    if offload_model or self.init_on_cpu:
-      if next(getattr(self, offload_model_name).parameters()).device.type == 'cuda':
-        getattr(self, offload_model_name).to('cpu')
-      if next(getattr(self, required_model_name).parameters()).device.type == 'cpu':
-        getattr(self, required_model_name).to(self.device)
-    return getattr(self, required_model_name)
+      required_name, offload_name = 'low_noise_model', 'high_noise_model'
+    required = getattr(self, required_name)
+    offload = getattr(self, offload_name)
+    if offload_model and next(offload.parameters()).device.type == 'cuda':
+      offload.to('cpu')
+    if next(required.parameters()).device.type == 'cpu':
+      required.to(self.device)
+    return required
 
   def generate(
     self,
@@ -389,7 +334,6 @@ class WanI2V:
     w = lat_w * self.vae_stride[2]
 
     max_seq_len = ((F - 1) // self.vae_stride[0] + 1) * lat_h * lat_w // (self.patch_size[1] * self.patch_size[2])
-    max_seq_len = int(math.ceil(max_seq_len / self.sp_size)) * self.sp_size
 
     seed = seed if seed >= 0 else random.randint(0, sys.maxsize)
     seed_g = torch.Generator(device=self.device)
@@ -407,18 +351,11 @@ class WanI2V:
     if n_prompt == "":
       n_prompt = self.sample_neg_prompt
 
-    # preprocess
-    if not self.t5_cpu:
-      self.text_encoder.model.to(self.device)
-      context = self.text_encoder([input_prompt], self.device)
-      context_null = self.text_encoder([n_prompt], self.device)
-      if offload_model:
-        self.text_encoder.model.cpu()
-    else:
-      context = self.text_encoder([input_prompt], torch.device('cpu'))
-      context_null = self.text_encoder([n_prompt], torch.device('cpu'))
-      context = [t.to(self.device) for t in context]
-      context_null = [t.to(self.device) for t in context_null]
+    self.text_encoder.model.to(self.device)
+    context = self.text_encoder([input_prompt], self.device)
+    context_null = self.text_encoder([n_prompt], self.device)
+    if offload_model:
+      self.text_encoder.model.cpu()
 
     y = self.vae.encode(
       [
@@ -433,20 +370,7 @@ class WanI2V:
     )[0]
     y = torch.concat([msk, y])
 
-    @contextmanager
-    def noop_no_sync():
-      yield
-
-    no_sync_low_noise = getattr(self.low_noise_model, 'no_sync', noop_no_sync)
-    no_sync_high_noise = getattr(self.high_noise_model, 'no_sync', noop_no_sync)
-
-    # evaluation mode
-    with (
-      torch.amp.autocast('cuda', dtype=self.param_dtype),
-      torch.no_grad(),
-      no_sync_low_noise(),
-      no_sync_high_noise(),
-    ):
+    with torch.amp.autocast('cuda', dtype=self.param_dtype), torch.no_grad():
       boundary = self.boundary * self.num_train_timesteps
 
       if sample_solver == 'unipc':
@@ -467,31 +391,29 @@ class WanI2V:
       # sample videos
       latent = noise
 
-      arg_c = {
-        'context': [context[0]],
-      }
+      def _pad_context(ctx_list):
+        ctx = ctx_list[0]
+        if ctx.size(0) < self.text_len:
+          ctx = torch.cat([ctx, ctx.new_zeros(self.text_len - ctx.size(0), ctx.size(1))])
+        return ctx.unsqueeze(0).to(self.param_dtype)
 
-      arg_null = {
-        'context': context_null,
-      }
+      encoder_hidden_states_cond = _pad_context(context)
+      encoder_hidden_states_uncond = _pad_context(context_null)
 
       if offload_model:
         torch.cuda.empty_cache()
 
       for _, t in enumerate(tqdm(timesteps)):
-        latent_model_input = [torch.cat([latent.to(self.device), y], dim=0)]
-        timestep = [t]
-
-        timestep = torch.stack(timestep).to(self.device)
-        timestep = timestep.unsqueeze(-1).expand(-1, max_seq_len)
+        latent_model_input = torch.cat([latent.to(self.device), y], dim=0).unsqueeze(0).to(self.param_dtype)
+        timestep = t.to(self.device).reshape(1).unsqueeze(-1).expand(-1, max_seq_len)
 
         model = self._prepare_model_for_timestep(t, boundary, offload_model)
         sample_guide_scale = guide_scale[1] if t.item() >= boundary else guide_scale[0]
 
-        noise_pred_cond = model(y=latent_model_input, t=timestep, **arg_c)[0]
+        noise_pred_cond = model(latent_model_input, timestep, encoder_hidden_states_cond).squeeze(0)
         if offload_model:
           torch.cuda.empty_cache()
-        noise_pred_uncond = model(y=latent_model_input, t=timestep, **arg_null)[0]
+        noise_pred_uncond = model(latent_model_input, timestep, encoder_hidden_states_uncond).squeeze(0)
         if offload_model:
           torch.cuda.empty_cache()
         noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_cond - noise_pred_uncond)
@@ -509,15 +431,12 @@ class WanI2V:
         self.high_noise_model.cpu()
         torch.cuda.empty_cache()
 
-      if self.rank == 0:
-        videos = self.vae.decode(x0)
+      videos = self.vae.decode(x0)
 
     del noise, latent, x0
     del sample_scheduler
     if offload_model:
       gc.collect()
       torch.cuda.synchronize()
-    if dist.is_initialized():
-      dist.barrier()
 
-    return videos[0] if self.rank == 0 else None
+    return videos[0]
