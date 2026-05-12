@@ -274,12 +274,9 @@ class WanI2V:
     """Returns 'high' for timesteps at or above the boundary, otherwise 'low'."""
     return 'high' if t.item() >= boundary else 'low'
 
-  def _prepare_model_for_timestep(self, t, boundary, offload_model):
+  def _prepare_model_for_timestep(self, t, boundary):
     stage = self._stage_for_timestep(t, boundary)
     required = self.low_noise_model if stage == 'low' else self.high_noise_model
-    other = self.high_noise_model if stage == 'low' else self.low_noise_model
-    if offload_model and next(other.parameters()).device.type == 'cuda':
-      other.to('cpu')
     if next(required.parameters()).device.type == 'cpu':
       required.to(self.device)
     return required, stage
@@ -297,7 +294,6 @@ class WanI2V:
     boundary=None,
     n_prompt="",
     seed=-1,
-    offload_model=True,
   ):
     r"""
     Generates video frames from input image and text prompt using diffusion process.
@@ -316,7 +312,6 @@ class WanI2V:
             Shift-invariant; the shifted-sigma timestep is derived internally. Overrides config.
         n_prompt: Negative prompt. Defaults to `config.sample_neg_prompt`.
         seed: -1 picks a random seed.
-        offload_model: Move idle DiTs to CPU between steps to save VRAM.
 
     Returns:
         torch.Tensor of shape (C, N, H, W).
@@ -363,8 +358,6 @@ class WanI2V:
     self.text_encoder.model.to(self.device)
     context = self.text_encoder([input_prompt], self.device)
     context_null = self.text_encoder([n_prompt], self.device)
-    if offload_model:
-      self.text_encoder.model.cpu()
 
     with torch.no_grad():
       # Bicubic + zeros allocated on CPU then transferred as a single tensor: keeps the
@@ -391,7 +384,7 @@ class WanI2V:
 
       if sample_solver == 'unipc':
         sample_scheduler = FlowUniPCMultistepScheduler(
-          num_train_timesteps=num_train_timesteps, shift=1, use_dynamic_shifting=False
+          num_train_timesteps=num_train_timesteps, shift=self.config.flow_shift
         )
         sample_scheduler.set_timesteps(sampling_steps, device=self.device, shift=shift)
         timesteps = sample_scheduler.timesteps
@@ -416,9 +409,6 @@ class WanI2V:
       encoder_hidden_states_cond = _pad_context(context)
       encoder_hidden_states_uncond = _pad_context(context_null)
 
-      if offload_model:
-        torch.cuda.empty_cache()
-
       stage_to_cfg = {'high': guide_scale_high, 'low': guide_scale_low}
       for t in tqdm(timesteps):
         latent_model_input = torch.cat([latent.to(self.device), y], dim=0).unsqueeze(0).to(param_dtype)
@@ -427,18 +417,14 @@ class WanI2V:
         # materializing as [B, seq_len, dim] (~3.7 GB per block at 720x1280, F=81).
         timestep = t.to(self.device).reshape(1)
 
-        model, stage = self._prepare_model_for_timestep(t, boundary_t, offload_model)
+        model, stage = self._prepare_model_for_timestep(t, boundary_t)
         sample_guide_scale = stage_to_cfg[stage]
 
         noise_pred_cond = model(latent_model_input, timestep, encoder_hidden_states_cond).squeeze(0)
-        if offload_model:
-          torch.cuda.empty_cache()
         if sample_guide_scale == 1.0:
           noise_pred = noise_pred_cond
         else:
           noise_pred_uncond = model(latent_model_input, timestep, encoder_hidden_states_uncond).squeeze(0)
-          if offload_model:
-            torch.cuda.empty_cache()
           noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_cond - noise_pred_uncond)
 
         latent_next = sample_scheduler.step(
@@ -449,17 +435,9 @@ class WanI2V:
 
       x0 = [latent]
 
-      if offload_model:
-        self.low_noise_model.cpu()
-        self.high_noise_model.cpu()
-        torch.cuda.empty_cache()
-
       videos = self.vae.decode(x0)
 
     del noise, latent, x0
     del sample_scheduler
-    if offload_model:
-      gc.collect()
-      torch.cuda.synchronize()
 
     return videos[0]

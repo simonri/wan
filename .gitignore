@@ -7,7 +7,7 @@ batch_test*
 nohup*
 wan.egg-info
 models
-encoded.pt
+*.pt
 *.mp4
 traces/
 .cuda-nvcc

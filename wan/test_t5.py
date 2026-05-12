@@ -22,7 +22,13 @@ def parse_args():
     action="store_true",
     help="Run one encode inside cudaProfilerStart/Stop with NVTX module ranges. Launch under `nsys profile --capture-range=cudaProfilerApi`.",
   )
+  parser.add_argument("--save", type=str, default=None, help="Save the context to a file.")
+  parser.add_argument("--compare", type=str, default=None, help="Compare the context to a file.")
   return parser.parse_args()
+
+
+def save_context(context, save_path):
+  torch.save(context, save_path)
 
 
 def build_encoder(device):
@@ -77,6 +83,16 @@ def profile_nsys(encoder, prompt, device):
   cuda_profiler_stop()
 
 
+def compare_context(context, compare_path):
+  compare_context = torch.load(compare_path)
+  if torch.allclose(context, compare_context):
+    print("Contexts are the same")
+  else:
+    print("Contexts are different")
+    max_diff = (context - compare_context).abs().max().item()
+    print(f"Max diff: {max_diff:.8f}")
+
+
 def main():
   args = parse_args()
   device = torch.device("cuda:0")
@@ -94,6 +110,12 @@ def main():
   context = encode_once(encoder, args.prompt, device)
   print(f"Prompt: {args.prompt!r}")
   print(f"Context shape: {tuple(context.shape)}, dtype: {context.dtype}")
+
+  if args.compare:
+    compare_context(context, args.compare)
+
+  if args.save:
+    save_context(context, args.save)
 
 
 if __name__ == "__main__":

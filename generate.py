@@ -53,9 +53,6 @@ def _parse_args():
   )
   parser.add_argument("--frame_num", type=int, default=None, help="How many frames of video are generated. The number should be 4n+1")
   parser.add_argument("--ckpt_dir", type=str, default=None, help="The path to the checkpoint directory.")
-  parser.add_argument(
-    "--offload_model", type=str2bool, default=True, help="Whether to offload the model to CPU after each model forward, reducing GPU memory usage."
-  )
   parser.add_argument("--save_file", type=str, default=None, help="The file to save the generated video to.")
   parser.add_argument("--prompt", type=str, default=None, help="The prompt to generate the video from.")
   parser.add_argument("--base_seed", type=int, default=-1, help="The seed to use for generating the video.")
@@ -152,7 +149,6 @@ def generate(args):
     guide_scale=guide_scale,
     boundary=args.boundary,
     seed=args.base_seed,
-    offload_model=args.offload_model,
   )
 
   if args.save_file is None:
