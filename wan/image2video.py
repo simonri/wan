@@ -12,6 +12,7 @@ from accelerate import init_empty_weights
 from safetensors.torch import load_file as load_safetensors_file
 from tqdm import tqdm
 
+from .configs.pipeline.wan import WanI2VConfig
 from .modules.model import WanModel
 from .modules.t5 import T5EncoderModel
 from .modules.vae2_1 import Wan2_1_VAE
@@ -20,6 +21,11 @@ from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 _LOW_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors"
 _HIGH_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors"
+
+
+def _linear_to_shifted_sigma(sigma_linear, shift):
+  """Flow-matching reparameterization: σ_shifted = shift·σ / (1 + (shift-1)·σ)."""
+  return shift * sigma_linear / (1 + (shift - 1) * sigma_linear)
 
 
 _COMFYUI_VAE_CHECKPOINTS = {
@@ -51,31 +57,31 @@ def _resolve_t5_tokenizer_path(checkpoint_dir, tokenizer_name):
   return tokenizer_name
 
 
-def _create_i2v_wan_model(config):
+def _create_i2v_wan_model(arch):
   with init_empty_weights():
     return WanModel(
-      patch_size=config.patch_size,
-      in_dim=getattr(config, "in_dim", 36),
-      dim=config.dim,
-      ffn_dim=config.ffn_dim,
-      freq_dim=config.freq_dim,
-      out_dim=getattr(config, "out_dim", 16),
-      num_heads=config.num_heads,
-      num_layers=config.num_layers,
-      qk_norm=config.qk_norm,
-      eps=config.eps,
+      patch_size=arch.patch_size,
+      in_dim=arch.in_dim,
+      dim=arch.hidden_size,
+      ffn_dim=arch.ffn_dim,
+      freq_dim=arch.freq_dim,
+      out_dim=arch.num_channels_latents,
+      num_heads=arch.num_attention_heads,
+      num_layers=arch.num_layers,
+      qk_norm=arch.qk_norm,
+      eps=arch.eps,
     )
 
 
-def _load_i2v_wan_model(checkpoint_path, config):
+def _load_i2v_wan_model(checkpoint_path, arch):
   if not os.path.isfile(checkpoint_path):
     raise FileNotFoundError(f"Could not find I2V diffusion checkpoint: {checkpoint_path}")
 
   logging.info(f"Loading WanModel from safetensors checkpoint: {checkpoint_path}")
-  model = _create_i2v_wan_model(config)
+  model = _create_i2v_wan_model(arch)
   state_dict = load_safetensors_file(checkpoint_path, device="cpu")
   for k in list(state_dict.keys()):
-    state_dict[k] = state_dict.pop(k).to(config.param_dtype)
+    state_dict[k] = state_dict.pop(k).to(arch.param_dtype)
 
   if "patch_embedding.weight" in state_dict:
     state_dict["patch_embedding.proj.weight"] = state_dict.pop("patch_embedding.weight")
@@ -131,7 +137,7 @@ def _load_i2v_wan_model(checkpoint_path, config):
     "cross_attn.norm_q.weight": "attn2.norm_q.weight",
     "cross_attn.norm_k.weight": "attn2.norm_k.weight",
   }
-  for i in range(config.num_layers):
+  for i in range(arch.num_layers):
     for old_suffix, new_suffix in block_suffix_map.items():
       old_key = f"blocks.{i}.{old_suffix}"
       if old_key in state_dict:
@@ -172,12 +178,19 @@ def _remap_lora_module_name(name):
   return name
 
 
-def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
+def _load_lora_state_dict(lora_path):
+  """Load and validate a LoRA safetensors file into a CPU state_dict."""
   if not os.path.isfile(lora_path):
     raise FileNotFoundError(f"Could not find WanModel LoRA checkpoint: {lora_path}")
+  return load_safetensors_file(lora_path, device="cpu")
 
-  logging.info(f"Merging WanModel LoRA from safetensors checkpoint: {lora_path}")
-  state_dict = load_safetensors_file(lora_path, device="cpu")
+
+def _apply_lora_state_dict(model, state_dict, strength=1.0):
+  """Merge a pre-loaded LoRA state_dict into model weights in-place.
+
+  Linear in `strength`: calling with `-strength` reverses a prior `+strength` merge
+  (modulo fp roundoff). Used to toggle speedup LoRAs across stage boundaries.
+  """
   down_suffix = ".lora_down.weight"
 
   for key, down_weight in state_dict.items():
@@ -211,63 +224,65 @@ def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
       module.weight.add_(delta.to(device=module.weight.device, dtype=module.weight.dtype))
 
 
+def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
+  """Convenience wrapper: load from disk and apply in one call."""
+  logging.info(f"Merging WanModel LoRA from safetensors checkpoint: {lora_path}")
+  _apply_lora_state_dict(model, _load_lora_state_dict(lora_path), strength=strength)
+
+
 class WanI2V:
-  def __init__(self, config, checkpoint_dir, low_noise_loras=(), high_noise_loras=()):
+  def __init__(self, config: WanI2VConfig, checkpoint_dir, low_noise_loras=(), high_noise_loras=()):
     """
     Args:
-      low_noise_loras / high_noise_loras: iterable of (path, strength) tuples to merge
-        into the respective DiT before inference.
+      config: WanI2VConfig (pipeline-level, wraps the DiT + sampler config).
+      checkpoint_dir: Root directory containing model checkpoints.
+      low_noise_loras / high_noise_loras: iterable of (path, strength) tuples merged
+        into the respective DiT at init.
     """
-    self.device = torch.device("cuda:0")
     self.config = config
-
-    self.num_train_timesteps = config.num_train_timesteps
-    self.boundary = config.boundary
-    self.param_dtype = config.param_dtype
-    self.text_len = config.text_len
+    dit_cfg = config.dit_config
+    arch = dit_cfg.arch_config
+    self.device = torch.device("cuda:0")
 
     self.text_encoder = T5EncoderModel(
-      text_len=config.text_len,
-      dtype=config.t5_dtype,
+      text_len=dit_cfg.text_len,
+      dtype=dit_cfg.t5_dtype,
       device=torch.device('cpu'),
-      checkpoint_path=_resolve_comfyui_file(checkpoint_dir, config.t5_checkpoint, "text_encoders"),
-      tokenizer_path=_resolve_t5_tokenizer_path(checkpoint_dir, config.t5_tokenizer),
+      checkpoint_path=_resolve_comfyui_file(checkpoint_dir, dit_cfg.t5_checkpoint, "text_encoders"),
+      tokenizer_path=_resolve_t5_tokenizer_path(checkpoint_dir, dit_cfg.t5_tokenizer),
     )
 
-    self.vae_stride = config.vae_stride
-    self.patch_size = config.patch_size
     self.vae = Wan2_1_VAE(
       vae_pth=_resolve_comfyui_file(
-        checkpoint_dir, config.vae_checkpoint, "vae", _COMFYUI_VAE_CHECKPOINTS.get(config.vae_checkpoint, ())
+        checkpoint_dir, dit_cfg.vae_checkpoint, "vae", _COMFYUI_VAE_CHECKPOINTS.get(dit_cfg.vae_checkpoint, ())
       ),
       device=self.device,
     )
 
     logging.info("Creating WanModel")
-    self.low_noise_model = self._load_dit(_LOW_NOISE_I2V_CHECKPOINT, low_noise_loras, config)
-    self.high_noise_model = self._load_dit(_HIGH_NOISE_I2V_CHECKPOINT, high_noise_loras, config)
+    self.low_noise_model = self._load_dit(_LOW_NOISE_I2V_CHECKPOINT, low_noise_loras, arch)
+    self.high_noise_model = self._load_dit(_HIGH_NOISE_I2V_CHECKPOINT, high_noise_loras, arch)
 
-    self.sample_neg_prompt = config.sample_neg_prompt
-
-  def _load_dit(self, checkpoint, loras, config):
-    model = _load_i2v_wan_model(checkpoint, config)
+  def _load_dit(self, checkpoint, loras, arch):
+    model = _load_i2v_wan_model(checkpoint, arch)
     for lora_path, strength in loras:
       _merge_lora_into_wan_model(model, lora_path, strength=strength)
     model.eval().requires_grad_(False)
     return model
 
+  def _stage_for_timestep(self, t, boundary):
+    """Returns 'high' for timesteps at or above the boundary, otherwise 'low'."""
+    return 'high' if t.item() >= boundary else 'low'
+
   def _prepare_model_for_timestep(self, t, boundary, offload_model):
-    if t.item() >= boundary:
-      required_name, offload_name = 'high_noise_model', 'low_noise_model'
-    else:
-      required_name, offload_name = 'low_noise_model', 'high_noise_model'
-    required = getattr(self, required_name)
-    offload = getattr(self, offload_name)
-    if offload_model and next(offload.parameters()).device.type == 'cuda':
-      offload.to('cpu')
+    stage = self._stage_for_timestep(t, boundary)
+    required = self.low_noise_model if stage == 'low' else self.high_noise_model
+    other = self.high_noise_model if stage == 'low' else self.low_noise_model
+    if offload_model and next(other.parameters()).device.type == 'cuda':
+      other.to('cpu')
     if next(required.parameters()).device.type == 'cpu':
       required.to(self.device)
-    return required
+    return required, stage
 
   def generate(
     self,
@@ -279,6 +294,7 @@ class WanI2V:
     sample_solver='unipc',
     sampling_steps=40,
     guide_scale=5.0,
+    boundary=None,
     n_prompt="",
     seed=-1,
     offload_model=True,
@@ -287,69 +303,62 @@ class WanI2V:
     Generates video frames from input image and text prompt using diffusion process.
 
     Args:
-        input_prompt (`str`):
-            Text prompt for content generation.
-        img (PIL.Image.Image):
-            Input image tensor. Shape: [3, H, W]
-        max_area (`int`, *optional*, defaults to 720*1280):
-            Maximum pixel area for latent space calculation. Controls video resolution scaling
-        frame_num (`int`, *optional*, defaults to 81):
-            How many frames to sample from a video. The number should be 4n+1
-        shift (`float`, *optional*, defaults to 5.0):
-            Noise schedule shift parameter. Affects temporal dynamics
-            [NOTE]: If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
-        sample_solver (`str`, *optional*, defaults to 'unipc'):
-            Solver used to sample the video.
-        sampling_steps (`int`, *optional*, defaults to 40):
-            Number of diffusion sampling steps. Higher values improve quality but slow generation
-        guide_scale (`float` or tuple[`float`], *optional*, defaults 5.0):
-            Classifier-free guidance scale. Controls prompt adherence vs. creativity.
-            If tuple, the first guide_scale will be used for low noise model and
-            the second guide_scale will be used for high noise model.
-        n_prompt (`str`, *optional*, defaults to ""):
-            Negative prompt for content exclusion. If not given, use `config.sample_neg_prompt`
-        seed (`int`, *optional*, defaults to -1):
-            Random seed for noise generation. If -1, use random seed
-        offload_model (`bool`, *optional*, defaults to True):
-            If True, offloads models to CPU during generation to save VRAM
+        input_prompt: Text prompt for content generation.
+        img (PIL.Image.Image): Input image. Shape: [3, H, W].
+        max_area: Maximum pixel area for the generated latent. Controls output resolution.
+        frame_num: How many frames to sample. Must be 4n+1.
+        shift: Flow-matching schedule shift parameter.
+        sample_solver: 'unipc' or 'dpm++'.
+        sampling_steps: Number of diffusion sampling steps.
+        guide_scale: Classifier-free guidance scale. A float (applied to both stages) or
+            a 2-tuple (low_cfg, high_cfg).
+        boundary: Linear-sigma boundary between low- and high-noise stages.
+            Shift-invariant; the shifted-sigma timestep is derived internally. Overrides config.
+        n_prompt: Negative prompt. Defaults to `config.sample_neg_prompt`.
+        seed: -1 picks a random seed.
+        offload_model: Move idle DiTs to CPU between steps to save VRAM.
 
     Returns:
-        torch.Tensor:
-            Generated video frames tensor. Dimensions: (C, N H, W) where:
-            - C: Color channels (3 for RGB)
-            - N: Number of frames (81)
-            - H: Frame height (from max_area)
-            - W: Frame width from max_area)
+        torch.Tensor of shape (C, N, H, W).
     """
     # preprocess
-    guide_scale = (guide_scale, guide_scale) if isinstance(guide_scale, float) else guide_scale
+    if isinstance(guide_scale, (int, float)):
+      guide_scale_low = guide_scale_high = float(guide_scale)
+    else:
+      guide_scale = tuple(float(g) for g in guide_scale)
+      if len(guide_scale) == 1:
+        guide_scale_low = guide_scale_high = guide_scale[0]
+      elif len(guide_scale) == 2:
+        guide_scale_low, guide_scale_high = guide_scale
+      else:
+        raise ValueError(f"guide_scale must have 1 or 2 values, got {len(guide_scale)}")
     img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device)
 
-    F = frame_num
+    num_frames = frame_num
+    vae_stride = self.config.dit_config.vae_stride
+    patch_size = self.config.dit_config.arch_config.patch_size
     h, w = img.shape[1:]
     aspect_ratio = h / w
-    lat_h = round(np.sqrt(max_area * aspect_ratio) // self.vae_stride[1] // self.patch_size[1] * self.patch_size[1])
-    lat_w = round(np.sqrt(max_area / aspect_ratio) // self.vae_stride[2] // self.patch_size[2] * self.patch_size[2])
-    h = lat_h * self.vae_stride[1]
-    w = lat_w * self.vae_stride[2]
+    lat_h = round(np.sqrt(max_area * aspect_ratio) // vae_stride[1] // patch_size[1] * patch_size[1])
+    lat_w = round(np.sqrt(max_area / aspect_ratio) // vae_stride[2] // patch_size[2] * patch_size[2])
+    h = lat_h * vae_stride[1]
+    w = lat_w * vae_stride[2]
 
-    max_seq_len = ((F - 1) // self.vae_stride[0] + 1) * lat_h * lat_w // (self.patch_size[1] * self.patch_size[2])
+    num_lat_frames = (num_frames - 1) // vae_stride[0] + 1
 
     seed = seed if seed >= 0 else random.randint(0, sys.maxsize)
     seed_g = torch.Generator(device=self.device)
     seed_g.manual_seed(seed)
-    noise = torch.randn(
-      16, (F - 1) // self.vae_stride[0] + 1, lat_h, lat_w, dtype=torch.float32, generator=seed_g, device=self.device
-    )
+    noise = torch.randn(16, num_lat_frames, lat_h, lat_w, dtype=torch.float32, generator=seed_g, device=self.device)
 
-    msk = torch.ones(1, F, lat_h, lat_w, device=self.device)
+    msk = torch.ones(1, num_frames, lat_h, lat_w, device=self.device)
     msk[:, 1:] = 0
     msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
     msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w)
     msk = msk.transpose(1, 2)[0]
 
     if n_prompt == "":
-      n_prompt = self.sample_neg_prompt
+      n_prompt = self.config.dit_config.sample_neg_prompt
 
     self.text_encoder.model.to(self.device)
     context = self.text_encoder([input_prompt], self.device)
@@ -357,31 +366,38 @@ class WanI2V:
     if offload_model:
       self.text_encoder.model.cpu()
 
-    y = self.vae.encode(
-      [
-        torch.concat(
-          [
-            torch.nn.functional.interpolate(img[None].cpu(), size=(h, w), mode='bicubic').transpose(0, 1),
-            torch.zeros(3, F - 1, h, w),
-          ],
-          dim=1,
-        ).to(self.device)
-      ]
-    )[0]
-    y = torch.concat([msk, y])
+    with torch.no_grad():
+      # Bicubic + zeros allocated on CPU then transferred as a single tensor: keeps the
+      # pre-encode conditioning out of GPU memory at 720x1280, F=81 (~1 GB) where it
+      # would otherwise push past the model's working-set headroom.
+      conditioning_input = torch.concat(
+        [
+          torch.nn.functional.interpolate(img[None].cpu(), size=(h, w), mode='bicubic').transpose(0, 1),
+          torch.zeros(3, num_frames - 1, h, w),
+        ],
+        dim=1,
+      ).to(self.device)
+      y = self.vae.encode([conditioning_input])[0]
+      y = torch.concat([msk, y])
 
-    with torch.amp.autocast('cuda', dtype=self.param_dtype), torch.no_grad():
-      boundary = self.boundary * self.num_train_timesteps
+    dit_cfg = self.config.dit_config
+    param_dtype = dit_cfg.arch_config.param_dtype
+    num_train_timesteps = dit_cfg.num_train_timesteps
+    text_len = dit_cfg.text_len
+
+    with torch.amp.autocast('cuda', dtype=param_dtype), torch.no_grad():
+      boundary_lin = self.config.boundary_ratio if boundary is None else boundary
+      boundary_t = _linear_to_shifted_sigma(boundary_lin, shift) * num_train_timesteps
 
       if sample_solver == 'unipc':
         sample_scheduler = FlowUniPCMultistepScheduler(
-          num_train_timesteps=self.num_train_timesteps, shift=1, use_dynamic_shifting=False
+          num_train_timesteps=num_train_timesteps, shift=1, use_dynamic_shifting=False
         )
         sample_scheduler.set_timesteps(sampling_steps, device=self.device, shift=shift)
         timesteps = sample_scheduler.timesteps
       elif sample_solver == 'dpm++':
         sample_scheduler = FlowDPMSolverMultistepScheduler(
-          num_train_timesteps=self.num_train_timesteps, shift=1, use_dynamic_shifting=False
+          num_train_timesteps=num_train_timesteps, shift=1, use_dynamic_shifting=False
         )
         sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
         timesteps, _ = retrieve_timesteps(sample_scheduler, device=self.device, sigmas=sampling_sigmas)
@@ -393,9 +409,9 @@ class WanI2V:
 
       def _pad_context(ctx_list):
         ctx = ctx_list[0]
-        if ctx.size(0) < self.text_len:
-          ctx = torch.cat([ctx, ctx.new_zeros(self.text_len - ctx.size(0), ctx.size(1))])
-        return ctx.unsqueeze(0).to(self.param_dtype)
+        if ctx.size(0) < text_len:
+          ctx = torch.cat([ctx, ctx.new_zeros(text_len - ctx.size(0), ctx.size(1))])
+        return ctx.unsqueeze(0).to(param_dtype)
 
       encoder_hidden_states_cond = _pad_context(context)
       encoder_hidden_states_uncond = _pad_context(context_null)
@@ -403,12 +419,16 @@ class WanI2V:
       if offload_model:
         torch.cuda.empty_cache()
 
-      for _, t in enumerate(tqdm(timesteps)):
-        latent_model_input = torch.cat([latent.to(self.device), y], dim=0).unsqueeze(0).to(self.param_dtype)
-        timestep = t.to(self.device).reshape(1).unsqueeze(-1).expand(-1, max_seq_len)
+      stage_to_cfg = {'high': guide_scale_high, 'low': guide_scale_low}
+      for t in tqdm(timesteps):
+        latent_model_input = torch.cat([latent.to(self.device), y], dim=0).unsqueeze(0).to(param_dtype)
+        # 1-D timestep keeps the model on its non-flex modulation path: the 6 shift/scale
+        # tensors per block stay [B, 1, dim] and broadcast in the norm kernel, instead of
+        # materializing as [B, seq_len, dim] (~3.7 GB per block at 720x1280, F=81).
+        timestep = t.to(self.device).reshape(1)
 
-        model = self._prepare_model_for_timestep(t, boundary, offload_model)
-        sample_guide_scale = guide_scale[1] if t.item() >= boundary else guide_scale[0]
+        model, stage = self._prepare_model_for_timestep(t, boundary_t, offload_model)
+        sample_guide_scale = stage_to_cfg[stage]
 
         noise_pred_cond = model(latent_model_input, timestep, encoder_hidden_states_cond).squeeze(0)
         if offload_model:
@@ -421,13 +441,13 @@ class WanI2V:
             torch.cuda.empty_cache()
           noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_cond - noise_pred_uncond)
 
-        temp_x0 = sample_scheduler.step(
+        latent_next = sample_scheduler.step(
           noise_pred.unsqueeze(0), t, latent.unsqueeze(0), return_dict=False, generator=seed_g
         )[0]
-        latent = temp_x0.squeeze(0)
-
-        x0 = [latent]
+        latent = latent_next.squeeze(0)
         del latent_model_input, timestep
+
+      x0 = [latent]
 
       if offload_model:
         self.low_noise_model.cpu()

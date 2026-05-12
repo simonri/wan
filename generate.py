@@ -11,7 +11,7 @@ from PIL import Image
 
 import wan
 from wan.configs import MAX_AREA_CONFIGS, SIZE_CONFIGS, SUPPORTED_SIZES
-from wan.configs.wan_i2v_A14B import i2v_A14B
+from wan.configs.pipeline.wan import WanI2VConfig
 from wan.utils.utils import save_video, str2bool
 
 warnings.filterwarnings('ignore')
@@ -21,19 +21,19 @@ def _validate_args(args):
   # Basic check
   assert args.ckpt_dir is not None, "Please specify the checkpoint directory."
 
-  cfg = i2v_A14B
+  dit_cfg = WanI2VConfig().dit_config
 
   if args.sample_steps is None:
-    args.sample_steps = cfg.sample_steps
+    args.sample_steps = dit_cfg.sample_steps
 
   if args.sample_shift is None:
-    args.sample_shift = cfg.sample_shift
+    args.sample_shift = dit_cfg.sample_shift
 
   if args.sample_guide_scale is None:
-    args.sample_guide_scale = cfg.sample_guide_scale
+    args.sample_guide_scale = dit_cfg.sample_guide_scale
 
   if args.frame_num is None:
-    args.frame_num = cfg.frame_num
+    args.frame_num = dit_cfg.frame_num
 
   args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(0, sys.maxsize)
   # Size check
@@ -63,7 +63,19 @@ def _parse_args():
   parser.add_argument("--sample_solver", type=str, default='unipc', choices=['unipc', 'dpm++'], help="The solver used to sample.")
   parser.add_argument("--sample_steps", type=int, default=None, help="The sampling steps.")
   parser.add_argument("--sample_shift", type=float, default=None, help="Sampling shift factor for flow matching schedulers.")
-  parser.add_argument("--sample_guide_scale", type=float, default=None, help="Classifier free guidance scale.")
+  parser.add_argument(
+    "--sample_guide_scale",
+    type=float,
+    nargs='+',
+    default=None,
+    help="CFG scale. One value (both stages) or two values (low_cfg high_cfg).",
+  )
+  parser.add_argument(
+    "--boundary",
+    type=float,
+    default=None,
+    help="Linear-sigma boundary between low- and high-noise stages (shift-invariant). Overrides config.",
+  )
   parser.add_argument(
     "--lora_low",
     nargs='*',
@@ -101,7 +113,7 @@ def generate(args):
     handlers=[logging.StreamHandler(stream=sys.stdout)],
   )
 
-  cfg = i2v_A14B
+  cfg = WanI2VConfig()
   logging.info(f"Generation job args: {args}")
   logging.info(f"Generation model config: {cfg}")
 
@@ -116,6 +128,10 @@ def generate(args):
   for tag, items in [("low", low_loras), ("high", high_loras)]:
     for path, strength in items:
       logging.info(f"LoRA ({tag}, strength={strength}): {path}")
+
+  guide_scale = args.sample_guide_scale
+  if guide_scale is not None and len(guide_scale) == 1:
+    guide_scale = guide_scale[0]
 
   logging.info("Creating WanI2V pipeline.")
   wan_i2v = wan.WanI2V(
@@ -133,7 +149,8 @@ def generate(args):
     shift=args.sample_shift,
     sample_solver=args.sample_solver,
     sampling_steps=args.sample_steps,
-    guide_scale=args.sample_guide_scale,
+    guide_scale=guide_scale,
+    boundary=args.boundary,
     seed=args.base_seed,
     offload_model=args.offload_model,
   )
@@ -145,7 +162,14 @@ def generate(args):
     args.save_file = f"{size}_{formatted_prompt}_{formatted_time}.mp4"
 
   logging.info(f"Saving generated video to {args.save_file}")
-  save_video(tensor=video[None], save_file=args.save_file, fps=cfg.sample_fps, nrow=1, normalize=True, value_range=(-1, 1))
+  save_video(
+    tensor=video[None],
+    save_file=args.save_file,
+    fps=cfg.dit_config.sample_fps,
+    nrow=1,
+    normalize=True,
+    value_range=(-1, 1),
+  )
   del video
 
   torch.cuda.synchronize()

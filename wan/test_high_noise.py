@@ -3,7 +3,7 @@ import statistics
 
 import torch
 
-from wan.configs.wan_i2v_A14B import i2v_A14B
+from wan.configs.pipeline.wan import WanI2VConfig
 
 from .bench.layer_timer import LayerTimer
 from .bench.nvtx_marker import NVTXMarker, cuda_profiler_start, cuda_profiler_stop
@@ -36,8 +36,8 @@ def parse_args():
   return parser.parse_args()
 
 
-def build_model(device, dtype):
-  model = _load_i2v_wan_model(_HIGH_NOISE_I2V_CHECKPOINT, i2v_A14B)
+def build_model(device, dtype, config):
+  model = _load_i2v_wan_model(_HIGH_NOISE_I2V_CHECKPOINT, config.arch_config)
   _merge_lora_into_wan_model(model, _HIGH_NOISE_LIGHTNING_LORA)
   model.eval().requires_grad_(False)
   model.to(dtype)
@@ -133,11 +133,12 @@ def profile_layers(model, inputs, dtype, limit, name_filter, include_parents):
 def main():
   args = parse_args()
   device = torch.device("cuda:0")
-  dtype = i2v_A14B.param_dtype
+  dit_cfg = WanI2VConfig().dit_config
+  dtype = dit_cfg.arch_config.param_dtype
   torch.backends.cudnn.benchmark = True
 
-  model = build_model(device, dtype)
-  inputs = build_inputs(device, i2v_A14B, dtype)
+  model = build_model(device, dtype, dit_cfg)
+  inputs = build_inputs(device, dit_cfg, dtype)
 
   if args.nsys:
     profile_nsys(model, inputs, dtype)
