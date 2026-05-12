@@ -13,3 +13,6 @@ class PipelineConfig:
   dit_precision: str = "bf16"
 
   boundary_ratio: float | None = None
+
+  def __post_init__(self) -> None:
+    """No-op hook so subclasses can safely chain via super()."""
