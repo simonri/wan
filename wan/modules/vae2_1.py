@@ -178,29 +178,6 @@ class Resample(nn.Module):
         feat_idx[0] += 2
     return x
 
-  def init_weight(self, conv):
-    conv_weight = conv.weight
-    nn.init.zeros_(conv_weight)
-    c1, c2, t, h, w = conv_weight.size()
-    one_matrix = torch.eye(c1, c2)
-    init_matrix = one_matrix
-    nn.init.zeros_(conv_weight)
-    # conv_weight.data[:,:,-1,1,1] = init_matrix * 0.5
-    conv_weight.data[:, :, 1, 0, 0] = init_matrix  # * 0.5
-    conv.weight.data.copy_(conv_weight)
-    nn.init.zeros_(conv.bias.data)
-
-  def init_weight2(self, conv):
-    conv_weight = conv.weight.data
-    nn.init.zeros_(conv_weight)
-    c1, c2, t, h, w = conv_weight.size()
-    init_matrix = torch.eye(c1 // 2, c2)
-    # init_matrix = repeat(init_matrix, 'o ... -> (o 2) ...').permute(1,0,2).contiguous().reshape(c1,c2)
-    conv_weight[: c1 // 2, :, -1, 0, 0] = init_matrix
-    conv_weight[c1 // 2 :, :, -1, 0, 0] = init_matrix
-    conv.weight.data.copy_(conv_weight)
-    nn.init.zeros_(conv.bias.data)
-
 
 class ResidualBlock(nn.Module):
   def __init__(self, in_dim: int, out_dim: int, dropout=0.0):

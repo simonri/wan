@@ -16,3 +16,6 @@ class PipelineConfig:
 
   def __post_init__(self) -> None:
     """No-op hook so subclasses can safely chain via super()."""
+
+  def tokenize_prompt(self, prompt: list[str], tokenizer, tok_kwargs) -> dict:
+    return tokenizer(prompt, **tok_kwargs)

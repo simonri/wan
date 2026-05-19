@@ -4,13 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from wan.modules.tokenizers import HuggingfaceTokenizer
 from wan.platform import get_local_torch_device
-
-__all__ = [
-  'T5Encoder',
-  'T5EncoderModel',
-]
 
 
 def fp16_clamp(x):
@@ -81,9 +75,9 @@ class T5Attention(nn.Module):
       attn_bias.masked_fill_(mask == 0, torch.finfo(x.dtype).min)
 
     # compute attention (T5 does not use scaling)
-    attn = torch.einsum('binc,bjnc->bnij', q, k) + attn_bias
+    attn = torch.einsum("binc,bjnc->bnij", q, k) + attn_bias
     attn = F.softmax(attn.float(), dim=-1).type_as(attn)
-    x = torch.einsum('bnij,bjnc->binc', attn, v)
+    x = torch.einsum("bnij,bjnc->binc", attn, v)
 
     # output
     x = x.reshape(b, -1, n * c)
@@ -237,36 +231,6 @@ class T5Encoder(nn.Module):
     return x
 
 
-def _t5(
-  name,
-  return_tokenizer=False,
-  tokenizer_kwargs=None,
-  dtype=torch.float32,
-  device='cpu',
-  **kwargs,
-):
-  if tokenizer_kwargs is None:
-    tokenizer_kwargs = {}
-  kwargs = dict(kwargs)
-
-  kwargs['vocab'] = kwargs.pop('vocab_size')
-  kwargs['num_layers'] = kwargs.pop('encoder_layers')
-  _ = kwargs.pop('decoder_layers')
-
-  # init model
-  with torch.device(device):
-    model = T5Encoder(**kwargs)
-
-  # set device
-  model = model.to(dtype=dtype, device=device)
-
-  # init tokenizer
-  if return_tokenizer:
-    tokenizer = HuggingfaceTokenizer(f'google/{name}', **tokenizer_kwargs)
-    return model, tokenizer
-  return model
-
-
 class T5EncoderModel:
   def __init__(
     self,
@@ -274,8 +238,6 @@ class T5EncoderModel:
     dtype=torch.bfloat16,
     checkpoint_path=None,
   ):
-    from accelerate import init_empty_weights
-
     local_torch_device = get_local_torch_device()
 
     self.text_len = text_len
@@ -285,23 +247,22 @@ class T5EncoderModel:
     if checkpoint_path is None:
       raise ValueError("checkpoint_path must be provided")
 
-    with init_empty_weights():
-      cfg = dict(
-        vocab_size=256384,
-        dim=4096,
-        dim_attn=4096,
-        dim_ffn=10240,
-        num_heads=64,
-        encoder_layers=24,
-        decoder_layers=24,
-        num_buckets=32,
-        shared_pos=False,
-        dropout=0.1,
-      )
-      cfg.update(encoder_only=True, return_tokenizer=False, dtype=dtype, device='meta')
-      model = _t5('umt5-xxl', **cfg)
+    model = T5Encoder(
+      vocab=256384,
+      dim=4096,
+      dim_attn=4096,
+      dim_ffn=10240,
+      num_heads=64,
+      num_layers=24,
+      num_buckets=32,
+      shared_pos=False,
+      dropout=0.1,
+      dtype=dtype,
+    )
 
-    print(f"Loading T5 encoder model from {checkpoint_path}")
-    state_dict = torch.load(checkpoint_path, map_location='cpu', mmap=True, weights_only=True)
+    state_dict = torch.load(checkpoint_path, map_location="cpu", mmap=True, weights_only=True)
     model.load_state_dict(state_dict, assign=True)
-    self.model = model.eval().requires_grad_(False).to(self.device)
+
+    model = model.to(dtype=dtype, device=local_torch_device)
+
+    self.model = model.eval().requires_grad_(False)
