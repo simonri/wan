@@ -1,18 +1,14 @@
-# Modified from transformers.models.t5.modeling_t5
-# Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-import logging
 import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .tokenizers import HuggingfaceTokenizer
+from wan.modules.tokenizers import HuggingfaceTokenizer
+from wan.platform import get_local_torch_device
 
 __all__ = [
-  'T5Model',
   'T5Encoder',
-  'T5Decoder',
   'T5EncoderModel',
 ]
 
@@ -241,91 +237,8 @@ class T5Encoder(nn.Module):
     return x
 
 
-class T5Decoder(nn.Module):
-  def __init__(self, vocab, dim, dim_attn, dim_ffn, num_heads, num_layers, num_buckets, shared_pos=True, dropout=0.1):
-    super().__init__()
-    self.dim = dim
-    self.dim_attn = dim_attn
-    self.dim_ffn = dim_ffn
-    self.num_heads = num_heads
-    self.num_layers = num_layers
-    self.num_buckets = num_buckets
-    self.shared_pos = shared_pos
-
-    # layers
-    self.token_embedding = vocab if isinstance(vocab, nn.Embedding) else nn.Embedding(vocab, dim)
-    self.pos_embedding = T5RelativeEmbedding(num_buckets, num_heads, bidirectional=False) if shared_pos else None
-    self.dropout = nn.Dropout(dropout)
-    self.blocks = nn.ModuleList(
-      [T5CrossAttention(dim, dim_attn, dim_ffn, num_heads, num_buckets, shared_pos, dropout) for _ in range(num_layers)]
-    )
-    self.norm = T5LayerNorm(dim)
-
-  def forward(self, ids, mask=None, encoder_states=None, encoder_mask=None):
-    b, s = ids.size()
-
-    # causal mask
-    if mask is None:
-      mask = torch.tril(torch.ones(1, s, s, device=ids.device))
-    elif mask.ndim == 2:
-      mask = torch.tril(mask.unsqueeze(1).expand(-1, s, -1))
-
-    # layers
-    x = self.token_embedding(ids)
-    x = self.dropout(x)
-    e = self.pos_embedding(x.size(1), x.size(1)) if self.shared_pos else None
-    for block in self.blocks:
-      x = block(x, mask, encoder_states, encoder_mask, pos_bias=e)
-    x = self.norm(x)
-    x = self.dropout(x)
-    return x
-
-
-class T5Model(nn.Module):
-  def __init__(
-    self,
-    vocab_size,
-    dim,
-    dim_attn,
-    dim_ffn,
-    num_heads,
-    encoder_layers,
-    decoder_layers,
-    num_buckets,
-    shared_pos=True,
-    dropout=0.1,
-  ):
-    super().__init__()
-    self.vocab_size = vocab_size
-    self.dim = dim
-    self.dim_attn = dim_attn
-    self.dim_ffn = dim_ffn
-    self.num_heads = num_heads
-    self.encoder_layers = encoder_layers
-    self.decoder_layers = decoder_layers
-    self.num_buckets = num_buckets
-
-    # layers
-    self.token_embedding = nn.Embedding(vocab_size, dim)
-    self.encoder = T5Encoder(
-      self.token_embedding, dim, dim_attn, dim_ffn, num_heads, encoder_layers, num_buckets, shared_pos, dropout
-    )
-    self.decoder = T5Decoder(
-      self.token_embedding, dim, dim_attn, dim_ffn, num_heads, decoder_layers, num_buckets, shared_pos, dropout
-    )
-    self.head = nn.Linear(dim, vocab_size, bias=False)
-
-  def forward(self, encoder_ids, encoder_mask, decoder_ids, decoder_mask):
-    x = self.encoder(encoder_ids, encoder_mask)
-    x = self.decoder(decoder_ids, decoder_mask, x, encoder_mask)
-    x = self.head(x)
-    return x
-
-
 def _t5(
   name,
-  encoder_only=False,
-  decoder_only=False,
   return_tokenizer=False,
   tokenizer_kwargs=None,
   dtype=torch.float32,
@@ -336,26 +249,13 @@ def _t5(
     tokenizer_kwargs = {}
   kwargs = dict(kwargs)
 
-  if encoder_only and decoder_only:
-    raise ValueError("encoder_only and decoder_only cannot both be True")
-
-  # params
-  if encoder_only:
-    model_cls = T5Encoder
-    kwargs['vocab'] = kwargs.pop('vocab_size')
-    kwargs['num_layers'] = kwargs.pop('encoder_layers')
-    _ = kwargs.pop('decoder_layers')
-  elif decoder_only:
-    model_cls = T5Decoder
-    kwargs['vocab'] = kwargs.pop('vocab_size')
-    kwargs['num_layers'] = kwargs.pop('decoder_layers')
-    _ = kwargs.pop('encoder_layers')
-  else:
-    model_cls = T5Model
+  kwargs['vocab'] = kwargs.pop('vocab_size')
+  kwargs['num_layers'] = kwargs.pop('encoder_layers')
+  _ = kwargs.pop('decoder_layers')
 
   # init model
   with torch.device(device):
-    model = model_cls(**kwargs)
+    model = T5Encoder(**kwargs)
 
   # set device
   model = model.to(dtype=dtype, device=device)
@@ -367,59 +267,41 @@ def _t5(
   return model
 
 
-def umt5_xxl(**kwargs):
-  cfg = dict(
-    vocab_size=256384,
-    dim=4096,
-    dim_attn=4096,
-    dim_ffn=10240,
-    num_heads=64,
-    encoder_layers=24,
-    decoder_layers=24,
-    num_buckets=32,
-    shared_pos=False,
-    dropout=0.1,
-  )
-  cfg.update(**kwargs)
-  return _t5('umt5-xxl', **cfg)
-
-
 class T5EncoderModel:
   def __init__(
     self,
     text_len,
     dtype=torch.bfloat16,
-    device='cpu',
     checkpoint_path=None,
-    tokenizer_path=None,
   ):
     from accelerate import init_empty_weights
 
+    local_torch_device = get_local_torch_device()
+
     self.text_len = text_len
     self.dtype = dtype
-    self.device = device
     self.checkpoint_path = checkpoint_path
-    self.tokenizer_path = tokenizer_path
 
     if checkpoint_path is None:
       raise ValueError("checkpoint_path must be provided")
-    if tokenizer_path is None:
-      raise ValueError("tokenizer_path must be provided")
 
     with init_empty_weights():
-      model = umt5_xxl(encoder_only=True, return_tokenizer=False, dtype=dtype, device='meta')
-    logging.info(f'loading {checkpoint_path}')
+      cfg = dict(
+        vocab_size=256384,
+        dim=4096,
+        dim_attn=4096,
+        dim_ffn=10240,
+        num_heads=64,
+        encoder_layers=24,
+        decoder_layers=24,
+        num_buckets=32,
+        shared_pos=False,
+        dropout=0.1,
+      )
+      cfg.update(encoder_only=True, return_tokenizer=False, dtype=dtype, device='meta')
+      model = _t5('umt5-xxl', **cfg)
+
+    print(f"Loading T5 encoder model from {checkpoint_path}")
     state_dict = torch.load(checkpoint_path, map_location='cpu', mmap=True, weights_only=True)
     model.load_state_dict(state_dict, assign=True)
     self.model = model.eval().requires_grad_(False).to(self.device)
-    # init tokenizer
-    self.tokenizer = HuggingfaceTokenizer(name=tokenizer_path, seq_len=text_len, clean='whitespace')
-
-  @torch.inference_mode()
-  def __call__(self, texts, device):
-    ids, mask = self.tokenizer(texts, return_mask=True, add_special_tokens=True)
-    ids = ids.to(device)
-    mask = mask.to(device)
-    seq_lens = mask.gt(0).sum(dim=1).long()
-    context = self.model(ids, mask)
-    return [u[:v] for u, v in zip(context, seq_lens, strict=True)]
