@@ -175,7 +175,7 @@ class WanTimeTextImageEmbedding(nn.Module):
 
 
 class WanModel(ModelMixin, ConfigMixin):
-  r"""Wan diffusion backbone supporting both text-to-video and image-to-video."""
+  """Wan diffusion backbone supporting both text-to-video and image-to-video."""
 
   def __init__(
     self,
@@ -221,7 +221,7 @@ class WanModel(ModelMixin, ConfigMixin):
     timestep: torch.Tensor,
     encoder_hidden_states: list[torch.Tensor],
   ):
-    r"""
+    """
     Forward pass through the diffusion model
 
     Args:

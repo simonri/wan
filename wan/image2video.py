@@ -1,5 +1,4 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-import gc
 import logging
 import os
 import random
@@ -12,12 +11,15 @@ from accelerate import init_empty_weights
 from safetensors.torch import load_file as load_safetensors_file
 from tqdm import tqdm
 
-from .configs.pipeline.wan import WanI2VConfig
-from .modules.model import WanModel
-from .modules.t5 import T5EncoderModel
-from .modules.vae2_1 import Wan2_1_VAE
-from .utils.fm_solvers import FlowDPMSolverMultistepScheduler, get_sampling_sigmas, retrieve_timesteps
-from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from wan.configs.pipeline.wan import WanI2VConfig
+from wan.modules.model import WanModel
+from wan.modules.t5 import T5EncoderModel
+from wan.modules.tokenizers import HuggingfaceTokenizer
+from wan.modules.vae2_1 import Wan2_1_VAE
+from wan.stages.schedule_batch import Req
+from wan.stages.text_encoding import TextEncodingStage
+from wan.utils.fm_solvers import FlowDPMSolverMultistepScheduler, get_sampling_sigmas, retrieve_timesteps
+from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 _LOW_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors"
 _HIGH_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors"
@@ -26,35 +28,6 @@ _HIGH_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_high_noise_14B_
 def _linear_to_shifted_sigma(sigma_linear, shift):
   """Flow-matching reparameterization: σ_shifted = shift·σ / (1 + (shift-1)·σ)."""
   return shift * sigma_linear / (1 + (shift - 1) * sigma_linear)
-
-
-_COMFYUI_VAE_CHECKPOINTS = {
-  "Wan2.1_VAE.pth": (
-    "wan_2.1_vae.safetensors",
-    "Wan2_1_VAE_bf16.safetensors",
-  ),
-}
-
-
-def _first_existing_path(paths):
-  paths = list(paths)
-  for path in paths:
-    if os.path.exists(path):
-      return path
-  return paths[0]
-
-
-def _resolve_comfyui_file(checkpoint_dir, filename, subfolder, alternates=()):
-  candidates = [os.path.join(checkpoint_dir, filename)]
-  candidates.extend(os.path.join(checkpoint_dir, subfolder, candidate) for candidate in (filename, *alternates))
-  return _first_existing_path(candidates)
-
-
-def _resolve_t5_tokenizer_path(checkpoint_dir, tokenizer_name):
-  local_path = os.path.join(checkpoint_dir, tokenizer_name)
-  if os.path.exists(local_path):
-    return local_path
-  return tokenizer_name
 
 
 def _create_i2v_wan_model(arch):
@@ -231,11 +204,10 @@ def _merge_lora_into_wan_model(model, lora_path, strength=1.0):
 
 
 class WanI2V:
-  def __init__(self, config: WanI2VConfig, checkpoint_dir, low_noise_loras=(), high_noise_loras=()):
+  def __init__(self, config: WanI2VConfig, low_noise_loras=(), high_noise_loras=()):
     """
     Args:
       config: WanI2VConfig (pipeline-level, wraps the DiT + sampler config).
-      checkpoint_dir: Root directory containing model checkpoints.
       low_noise_loras / high_noise_loras: iterable of (path, strength) tuples merged
         into the respective DiT at init.
     """
@@ -247,21 +219,19 @@ class WanI2V:
     self.text_encoder = T5EncoderModel(
       text_len=dit_cfg.text_len,
       dtype=dit_cfg.t5_dtype,
-      device=torch.device('cpu'),
-      checkpoint_path=_resolve_comfyui_file(checkpoint_dir, dit_cfg.t5_checkpoint, "text_encoders"),
-      tokenizer_path=_resolve_t5_tokenizer_path(checkpoint_dir, dit_cfg.t5_tokenizer),
+      checkpoint_path=dit_cfg.t5_checkpoint,
     )
 
-    self.vae = Wan2_1_VAE(
-      vae_pth=_resolve_comfyui_file(
-        checkpoint_dir, dit_cfg.vae_checkpoint, "vae", _COMFYUI_VAE_CHECKPOINTS.get(dit_cfg.vae_checkpoint, ())
-      ),
-      device=self.device,
-    )
+    self.tokenizer = HuggingfaceTokenizer(name=dit_cfg.t5_tokenizer, seq_len=dit_cfg.text_len, clean='whitespace')
+
+    self.vae = Wan2_1_VAE(vae_pth=dit_cfg.vae_checkpoint, device=self.device)
 
     logging.info("Creating WanModel")
     self.low_noise_model = self._load_dit(_LOW_NOISE_I2V_CHECKPOINT, low_noise_loras, arch)
     self.high_noise_model = self._load_dit(_HIGH_NOISE_I2V_CHECKPOINT, high_noise_loras, arch)
+
+    # stages
+    self.text_encoding_stage = TextEncodingStage(text_encoder=self.text_encoder, tokenizer=self.tokenizer)
 
   def _load_dit(self, checkpoint, loras, arch):
     model = _load_i2v_wan_model(checkpoint, arch)
@@ -299,22 +269,22 @@ class WanI2V:
     Generates video frames from input image and text prompt using diffusion process.
 
     Args:
-        input_prompt: Text prompt for content generation.
-        img (PIL.Image.Image): Input image. Shape: [3, H, W].
-        max_area: Maximum pixel area for the generated latent. Controls output resolution.
-        frame_num: How many frames to sample. Must be 4n+1.
-        shift: Flow-matching schedule shift parameter.
-        sample_solver: 'unipc' or 'dpm++'.
-        sampling_steps: Number of diffusion sampling steps.
-        guide_scale: Classifier-free guidance scale. A float (applied to both stages) or
-            a 2-tuple (low_cfg, high_cfg).
-        boundary: Linear-sigma boundary between low- and high-noise stages.
-            Shift-invariant; the shifted-sigma timestep is derived internally. Overrides config.
-        n_prompt: Negative prompt. Defaults to `config.sample_neg_prompt`.
-        seed: -1 picks a random seed.
+      input_prompt: Text prompt for content generation.
+      img (PIL.Image.Image): Input image. Shape: [3, H, W].
+      max_area: Maximum pixel area for the generated latent. Controls output resolution.
+      frame_num: How many frames to sample. Must be 4n+1.
+      shift: Flow-matching schedule shift parameter.
+      sample_solver: 'unipc' or 'dpm++'.
+      sampling_steps: Number of diffusion sampling steps.
+      guide_scale: Classifier-free guidance scale. A float (applied to both stages) or
+          a 2-tuple (low_cfg, high_cfg).
+      boundary: Linear-sigma boundary between low- and high-noise stages.
+          Shift-invariant; the shifted-sigma timestep is derived internally. Overrides config.
+      n_prompt: Negative prompt. Defaults to `config.sample_neg_prompt`.
+      seed: -1 picks a random seed.
 
     Returns:
-        torch.Tensor of shape (C, N, H, W).
+      torch.Tensor of shape (C, N, H, W).
     """
     # preprocess
     if isinstance(guide_scale, (int, float)):
@@ -358,6 +328,13 @@ class WanI2V:
     self.text_encoder.model.to(self.device)
     context = self.text_encoder([input_prompt], self.device)
     context_null = self.text_encoder([n_prompt], self.device)
+
+    req = Req()
+
+    req.prompt = input_prompt
+    req.do_classifier_free_guidance = False
+
+    context = self.text_encoding_stage(req)
 
     with torch.no_grad():
       # Bicubic + zeros allocated on CPU then transferred as a single tensor: keeps the
