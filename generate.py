@@ -3,24 +3,18 @@ import argparse
 import logging
 import random
 import sys
-import warnings
-from datetime import datetime
 
 import torch
 from PIL import Image
 
-import wan
 from wan.configs import MAX_AREA_CONFIGS, SIZE_CONFIGS, SUPPORTED_SIZES
 from wan.configs.pipeline.wan import WanI2VConfig
-from wan.utils.utils import save_video, str2bool
-
-warnings.filterwarnings('ignore')
+from wan.pipeline.wan_i2v_pipeline import WanImageToVideoPipeline
+from wan.server_args import ServerArgs
+from wan.stages.schedule_batch import Req
 
 
 def _validate_args(args):
-  # Basic check
-  assert args.ckpt_dir is not None, "Please specify the checkpoint directory."
-
   dit_cfg = WanI2VConfig().dit_config
 
   if args.sample_steps is None:
@@ -37,9 +31,7 @@ def _validate_args(args):
 
   args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(0, sys.maxsize)
   # Size check
-  assert args.size in SUPPORTED_SIZES, (
-    f"Unsupport size {args.size}, supported sizes are: {', '.join(SUPPORTED_SIZES)}"
-  )
+  assert args.size in SUPPORTED_SIZES, f"Unsupport size {args.size}, supported sizes are: {', '.join(SUPPORTED_SIZES)}"
 
 
 def _parse_args():
@@ -51,15 +43,20 @@ def _parse_args():
     choices=list(SIZE_CONFIGS.keys()),
     help="The area (width*height) of the generated video. For the I2V task, the aspect ratio of the output video will follow that of the input image.",
   )
-  parser.add_argument("--frame_num", type=int, default=None, help="How many frames of video are generated. The number should be 4n+1")
-  parser.add_argument("--ckpt_dir", type=str, default=None, help="The path to the checkpoint directory.")
+  parser.add_argument(
+    "--frame_num", type=int, default=None, help="How many frames of video are generated. The number should be 4n+1"
+  )
   parser.add_argument("--save_file", type=str, default=None, help="The file to save the generated video to.")
   parser.add_argument("--prompt", type=str, default=None, help="The prompt to generate the video from.")
   parser.add_argument("--base_seed", type=int, default=-1, help="The seed to use for generating the video.")
   parser.add_argument("--image", type=str, default=None, help="The image to generate the video from.")
-  parser.add_argument("--sample_solver", type=str, default='unipc', choices=['unipc', 'dpm++'], help="The solver used to sample.")
+  parser.add_argument(
+    "--sample_solver", type=str, default='unipc', choices=['unipc', 'dpm++'], help="The solver used to sample."
+  )
   parser.add_argument("--sample_steps", type=int, default=None, help="The sampling steps.")
-  parser.add_argument("--sample_shift", type=float, default=None, help="Sampling shift factor for flow matching schedulers.")
+  parser.add_argument(
+    "--sample_shift", type=float, default=None, help="Sampling shift factor for flow matching schedulers."
+  )
   parser.add_argument(
     "--sample_guide_scale",
     type=float,
@@ -115,10 +112,6 @@ def generate(args):
   logging.info(f"Generation model config: {cfg}")
 
   logging.info(f"Input prompt: {args.prompt}")
-  img = None
-  if args.image is not None:
-    img = Image.open(args.image).convert("RGB")
-    logging.info(f"Input image: {args.image}")
 
   low_loras = [_parse_lora_spec(s) for s in args.lora_low]
   high_loras = [_parse_lora_spec(s) for s in args.lora_high]
@@ -131,42 +124,47 @@ def generate(args):
     guide_scale = guide_scale[0]
 
   logging.info("Creating WanI2V pipeline.")
-  wan_i2v = wan.WanI2V(
+  wan_i2v = WanImageToVideoPipeline(
     config=cfg,
-    checkpoint_dir=args.ckpt_dir,
-    low_noise_loras=low_loras,
-    high_noise_loras=high_loras,
-  )
-  logging.info("Generating video ...")
-  video = wan_i2v.generate(
-    args.prompt,
-    img,
-    max_area=MAX_AREA_CONFIGS[args.size],
-    frame_num=args.frame_num,
-    shift=args.sample_shift,
-    sample_solver=args.sample_solver,
-    sampling_steps=args.sample_steps,
-    guide_scale=guide_scale,
-    boundary=args.boundary,
-    seed=args.base_seed,
   )
 
-  if args.save_file is None:
-    formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    formatted_prompt = args.prompt.replace(" ", "_").replace("/", "_")[:50]
-    size = args.size.replace('*', 'x') if sys.platform == 'win32' else args.size
-    args.save_file = f"{size}_{formatted_prompt}_{formatted_time}.mp4"
+  req = Req()
 
-  logging.info(f"Saving generated video to {args.save_file}")
-  save_video(
-    tensor=video[None],
-    save_file=args.save_file,
-    fps=cfg.dit_config.sample_fps,
-    nrow=1,
-    normalize=True,
-    value_range=(-1, 1),
+  req.prompt = args.prompt
+  req.image_path = args.image
+
+  server_args = ServerArgs(pipeline_config=cfg)
+
+  # max_area=MAX_AREA_CONFIGS[args.size],
+  # frame_num=args.frame_num,
+  # shift=args.sample_shift,
+  # sample_solver=args.sample_solver,
+  # sampling_steps=args.sample_steps,
+  # guide_scale=guide_scale,
+  # boundary=args.boundary,
+  # seed=args.base_seed,
+
+  wan_i2v.forward(
+    req,
+    server_args,
   )
-  del video
+
+  # if args.save_file is None:
+  #   formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+  #   formatted_prompt = args.prompt.replace(" ", "_").replace("/", "_")[:50]
+  #   size = args.size.replace('*', 'x') if sys.platform == 'win32' else args.size
+  #   args.save_file = f"{size}_{formatted_prompt}_{formatted_time}.mp4"
+
+  # logging.info(f"Saving generated video to {args.save_file}")
+  # save_video(
+  #   tensor=video[None],
+  #   save_file=args.save_file,
+  #   fps=cfg.dit_config.sample_fps,
+  #   nrow=1,
+  #   normalize=True,
+  #   value_range=(-1, 1),
+  # )
+  # del video
 
   torch.cuda.synchronize()
   logging.info("Finished.")

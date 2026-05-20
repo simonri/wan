@@ -3,6 +3,7 @@ import torch
 from wan.configs.pipeline.base import PipelineConfig
 from wan.modules.t5 import T5EncoderModel
 from wan.modules.tokenizers import HuggingfaceTokenizer
+from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
 
@@ -14,11 +15,11 @@ class TextEncodingStage(PipelineStage):
     self.text_encoder = text_encoder
 
   @torch.no_grad()
-  def forward(self, batch: Req, pipeline_config: PipelineConfig):
+  def forward(self, batch: Req, server_args: ServerArgs):
     prompt_text = batch.prompt
 
     (prompt_embeds_list, prompt_mask_list, pooler_embeds_list, prompt_embeds_mask_list, prompt_seq_lens_list) = (
-      self.encode_text(prompt_text, pipeline_config)
+      self.encode_text(prompt_text, server_args.pipeline_config)
     )
 
     for pe in prompt_embeds_list:

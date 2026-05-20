@@ -3,6 +3,7 @@ import torch
 
 from wan.modules.vae2_1 import Wan2_1_VAE
 from wan.platform import get_local_torch_device
+from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
 from wan.vision_utils import normalize, numpy_to_pt, pil_to_numpy
@@ -29,7 +30,7 @@ class ImageVAEEncodingStage(PipelineStage):
 
     return image
 
-  def forward(self, batch: Req) -> Req:
+  def forward(self, batch: Req, server_args: ServerArgs) -> Req:
     if batch.condition_image is None:
       return batch
 

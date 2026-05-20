@@ -1,5 +1,6 @@
 import PIL.Image
 
+from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
 
@@ -16,7 +17,7 @@ class InputValidationStage(PipelineStage):
   def __init__(self):
     super().__init__()
 
-  def forward(self, batch: Req) -> Req:
+  def forward(self, batch: Req, server_args: ServerArgs) -> Req:
     # ensure prompt is properly formatted
     if batch.prompt is None and batch.prompt_embeds is None:
       raise ValueError("Either prompt or prompt_embeds must be provided")
