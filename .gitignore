@@ -6,8 +6,8 @@ new_checkpoint*
 batch_test*
 nohup*
 wan.egg-info
-models
 *.pt
 *.mp4
 traces/
 .cuda-nvcc
+cache

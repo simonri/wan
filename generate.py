@@ -39,15 +39,15 @@ def generate(args):
     executor=executor,
   )
 
-  req = Req()
+  server_args = ServerArgs(pipeline_config=cfg)
+  sampling_params = Wan2_2_I2V_SamplingParam(height=832, width=480, num_frames=81, num_inference_steps=8)
+
+  req = Req(
+    sampling_params=sampling_params,
+  )
 
   req.prompt = args.prompt
   req.image_path = args.image
-
-  sampling_params = Wan2_2_I2V_SamplingParam()
-  req.sampling_params = sampling_params
-
-  server_args = ServerArgs(pipeline_config=cfg)
 
   wan_i2v.forward(
     req,

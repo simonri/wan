@@ -69,4 +69,4 @@ class ImageVAEEncodingStage(PipelineStage):
 
       # encode image
       latent_dist = self.vae.encode(video_condition)
-      print(latent_dist.shape)
+      print(f"Encoded {len(latent_dist)} frames")

@@ -18,15 +18,15 @@ class TextEncodingStage(PipelineStage):
   def forward(self, batch: Req, server_args: ServerArgs):
     prompt_text = batch.prompt
 
-    (prompt_embeds_list, prompt_mask_list, pooler_embeds_list, prompt_embeds_mask_list, prompt_seq_lens_list) = (
+    (prompt_embeds_list, prompt_mask_list, pooled_embeds_list, prompt_embeds_mask_list, prompt_seq_lens_list) = (
       self.encode_text(prompt_text, server_args.pipeline_config)
     )
 
     for pe in prompt_embeds_list:
       batch.prompt_embeds.append(pe)
 
-    for pe in pooler_embeds_list:
-      batch.pooler_embeds.append(pe)
+    for pe in pooled_embeds_list:
+      batch.pooled_embeds.append(pe)
 
     if batch.prompt_attention_mask is None:
       batch.prompt_attention_mask = []
@@ -53,10 +53,10 @@ class TextEncodingStage(PipelineStage):
     """Encode prompts with T5/UMT5.
 
     Returns:
-      (embeds_list, attn_masks_list, pooled_embeds_list, embeds_masks_list, seq_lens_list)
+      (embeds_list, attn_masks_list, pooler_embeds_list, embeds_masks_list, seq_lens_list)
 
-      Each list has one entry per input prompt. T5 has no pooled output, so
-      `pooled_embeds_list` is filled with None placeholders. For this encoder
+      Each list has one entry per input prompt. T5 has no pooler output, so
+      `pooler_embeds_list` is filled with None placeholders. For this encoder
       `embeds_masks_list` mirrors `attn_masks_list` (no separate embed mask).
       All tensors are trimmed to the prompt's true length (padding stripped).
     """
