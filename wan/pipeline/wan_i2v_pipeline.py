@@ -1,48 +1,50 @@
-from wan.configs.pipeline.wan import WanI2VConfig
+from transformers import AutoTokenizer
+
 from wan.modules.t5 import T5EncoderModel
-from wan.modules.tokenizers import HuggingfaceTokenizer
 from wan.modules.vae2_1 import Wan2_1_VAE
 from wan.pipeline.base import PipelineBase
 from wan.pipeline.executor import BaseExecutor
-from wan.platform import get_local_torch_device
+from wan.server_args import ServerArgs
 from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.input_validation import InputValidationStage
 from wan.stages.text_encoding import TextEncodingStage
+from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 
 class WanImageToVideoPipeline(PipelineBase):
-  def __init__(self, config: WanI2VConfig, executor: BaseExecutor):
+  def __init__(self, server_args: ServerArgs, executor: BaseExecutor):
     super().__init__(executor)
-    self.config = config
-
     print("Loading pipeline modules...")
-    self.modules = self.load_modules(config)
+    self.modules = self.load_modules(server_args)
 
-    self.create_pipeline_stages(config)
+    self.create_pipeline_stages(server_args)
 
-  def load_modules(self, config: WanI2VConfig) -> dict[str, any]:
-    local_torch_device = get_local_torch_device()
+  def load_modules(self, server_args: ServerArgs) -> dict[str, any]:
+    pipeline_config = server_args.pipeline_config
 
-    text_encoder = T5EncoderModel(
-      text_len=config.dit_config.text_len,
-      dtype=config.dit_config.t5_dtype,
-      checkpoint_path=config.dit_config.t5_checkpoint,
+    text_encoder = T5EncoderModel(config=pipeline_config.text_encoder_config)
+    text_encoder.load("models/text_encoders/models_t5_umt5-xxl-enc-bf16.pth", server_args)
+
+    tokenizer = AutoTokenizer.from_pretrained("google/umt5-xxl")
+
+    vae = Wan2_1_VAE(config=pipeline_config.vae_config)
+    vae.load(pipeline_config.vae_config.vae_checkpoint, server_args)
+
+    scheduler = FlowUniPCMultistepScheduler(
+      shift=pipeline_config.flow_shift,
     )
-
-    tokenizer = HuggingfaceTokenizer(name=config.dit_config.t5_tokenizer, seq_len=config.dit_config.text_len)
-
-    vae = Wan2_1_VAE(vae_pth=config.dit_config.vae_checkpoint, device=local_torch_device)
 
     return {
       "text_encoder": text_encoder,
       "tokenizer": tokenizer,
       "vae": vae,
+      "scheduler": scheduler,
     }
 
   def get_module(self, name: str) -> any:
     return self.modules[name]
 
-  def create_pipeline_stages(self, config: WanI2VConfig):
+  def create_pipeline_stages(self, server_args: ServerArgs):
     self.add_stage(InputValidationStage())
 
     self.add_stage(

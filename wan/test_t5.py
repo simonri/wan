@@ -91,20 +91,17 @@ def main():
   args = parse_args()
   local_torch_device = get_local_torch_device()
 
-  wan_pipeline_config = WanI2VConfig()
+  pipeline_config = WanI2VConfig()
+  server_args = ServerArgs(pipeline_config=pipeline_config)
 
   tokenizer = AutoTokenizer.from_pretrained("google/umt5-xxl")
 
-  text_encoder = T5EncoderModel(
-    config=wan_pipeline_config.text_encoder_config,
-    dtype=DTYPE,
-    checkpoint_path=CHECKPOINT_PATH,
-  )
+  text_encoder = T5EncoderModel(config=pipeline_config.text_encoder_config)
+  text_encoder.load(CHECKPOINT_PATH, server_args)
 
   text_encoding_stage = TextEncodingStage(text_encoder=text_encoder, tokenizer=tokenizer)
 
   batch = Req(prompt=DEFAULT_PROMPT)
-  server_args = ServerArgs(pipeline_config=wan_pipeline_config)
 
   text_encoding_stage(batch, server_args)
 

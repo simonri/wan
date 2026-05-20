@@ -1,16 +1,15 @@
-import logging
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
-from safetensors.torch import load_file as load_safetensors_file
+from safetensors.torch import load_file as safetensors_load_file
 
 from wan.configs.models.vaes.wanvae import WanVAEConfig
 from wan.kernels.rsnorm import rms_norm_triton
 from wan.platform import get_local_torch_device
+from wan.server_args import ServerArgs
 
 CACHE_T = 2
 
@@ -535,167 +534,84 @@ def count_cache_layers(model):
   return count
 
 
-class WanVAE_(nn.Module):
-  def __init__(
-    self,
-    dim=128,
-    z_dim=4,
-    dim_mult=[1, 2, 4, 4],
-    num_res_blocks=2,
-    attn_scales=[],
-    temperal_downsample=[True, True, False],
-    dropout=0.0,
-  ):
+class Wan2_1_VAE(nn.Module):
+  def __init__(self, config: WanVAEConfig):
     super().__init__()
-    self.dim = dim
-    self.z_dim = z_dim
-    self.dim_mult = dim_mult
-    self.num_res_blocks = num_res_blocks
-    self.attn_scales = attn_scales
-    self.temperal_downsample = temperal_downsample
-    self.temperal_upsample = temperal_downsample[::-1]
+    self.z_dim = config.arch_config.z_dim
+    self.latents_mean = list(config.arch_config.latents_mean)
+    self.latents_std = list(config.arch_config.latents_std)
 
-    # modules
-    self.encoder = Encoder3d(dim, z_dim * 2, dim_mult, num_res_blocks, attn_scales, self.temperal_downsample, dropout)
-    self.conv1 = CausalConv3d(z_dim * 2, z_dim * 2, 1)
-    self.conv2 = CausalConv3d(z_dim, z_dim, 1)
-    self.decoder = Decoder3d(dim, z_dim, dim_mult, num_res_blocks, attn_scales, self.temperal_upsample, dropout)
+    dim = 96
+    dim_mult = [1, 2, 4, 4]
+    num_res_blocks = 2
+    attn_scales = []
+    temperal_downsample = [False, True, True]
+    temperal_upsample = temperal_downsample[::-1]
+    dropout = 0.0
 
-  def forward(self, x):
-    mu, log_var = self.encode(x)
-    z = self.reparameterize(mu, log_var)
-    x_recon = self.decode(z)
-    return x_recon, mu, log_var
+    self.encoder = Encoder3d(dim, self.z_dim * 2, dim_mult, num_res_blocks, attn_scales, temperal_downsample, dropout)
+    self.conv1 = CausalConv3d(self.z_dim * 2, self.z_dim * 2, 1)
+    self.conv2 = CausalConv3d(self.z_dim, self.z_dim, 1)
+    self.decoder = Decoder3d(dim, self.z_dim, dim_mult, num_res_blocks, attn_scales, temperal_upsample, dropout)
 
-  def encode(self, x: torch.Tensor) -> torch.Tensor:
-    self.clear_cache()
-    conv_idx = [0]
-    # cache
-    t = x.shape[2]
-    t = 1 + ((t - 1) // 4) * 4
-    iter_ = 1 + (t - 1) // 2
-    feat_map = None
+    _to_vae_channels_last(self)
 
-    if iter_ > 1:
-      feat_map = [None] * count_cache_layers(self.encoder)
+  def load(self, model_path: str, server_args: ServerArgs):
+    target_device = get_local_torch_device()
+    self.to(target_device)
 
-    # 对encode输入的x，按时间拆分为1、4、4、4....
-    for i in range(iter_):
-      conv_idx = [0]
-      if i == 0:
-        out = self.encoder(x[:, :, :1, :, :], feat_cache=feat_map, feat_idx=conv_idx)
-      else:
-        out_ = self.encoder(
-          x[:, :, 1 + 2 * (i - 1) : 1 + 2 * i, :, :], feat_cache=feat_map, feat_idx=conv_idx, final=(i == (iter_ - 1))
-        )
-        if out_ is None:
-          continue
-        out = torch.cat([out, out_], 2)
+    state_dict = safetensors_load_file(model_path)
+    self.load_state_dict(state_dict, strict=False)
 
-    enc = self.conv1(out)
-    mu, logvar = enc[:, : self.z_dim, :, :, :], enc[:, self.z_dim :, :, :, :]
-    enc = torch.cat([mu, logvar], dim=1)
-    enc = DiagonalGaussianDistribution(enc)
+  def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
+    dtype = next(self.parameters()).dtype
+    with torch.amp.autocast("cuda", dtype=dtype):
+      self.clear_cache()
+      t = x.shape[2]
+      t = 1 + ((t - 1) // 4) * 4
+      iter_ = 1 + (t - 1) // 2
+      feat_map = [None] * count_cache_layers(self.encoder) if iter_ > 1 else None
 
-    return enc
+      # 对encode输入的x，按时间拆分为1、4、4、4....
+      for i in range(iter_):
+        conv_idx = [0]
+        if i == 0:
+          out = self.encoder(x[:, :, :1, :, :], feat_cache=feat_map, feat_idx=conv_idx)
+        else:
+          out_ = self.encoder(
+            x[:, :, 1 + 2 * (i - 1) : 1 + 2 * i, :, :],
+            feat_cache=feat_map,
+            feat_idx=conv_idx,
+            final=(i == (iter_ - 1)),
+          )
+          if out_ is None:
+            continue
+          out = torch.cat([out, out_], 2)
+
+      enc = self.conv1(out)
+      mu, logvar = enc[:, : self.z_dim, :, :, :], enc[:, self.z_dim :, :, :, :]
+      return DiagonalGaussianDistribution(torch.cat([mu, logvar], dim=1))
 
   def decode(self, z: torch.Tensor) -> torch.Tensor:
-    self.clear_cache()
-    iter_ = z.shape[2]
-
-    x = self.conv2(z)
-    for i in range(iter_):
-      self._conv_idx = [0]
-      if i == 0:
-        out = self.decoder(x[:, :, i : i + 1, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
-      else:
-        out_ = self.decoder(x[:, :, i : i + 1, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
-        out = torch.cat([out, out_], 2)
-    self.clear_cache()
-    return out
-
-  def reparameterize(self, mu, log_var):
-    std = torch.exp(0.5 * log_var)
-    eps = torch.randn_like(std)
-    return eps * std + mu
-
-  def sample(self, imgs, deterministic=False):
-    mu, log_var = self.encode(imgs)
-    if deterministic:
-      return mu
-    std = torch.exp(0.5 * log_var.clamp(-30.0, 20.0))
-    return mu + std * torch.randn_like(std)
+    dtype = next(self.parameters()).dtype
+    with torch.amp.autocast("cuda", dtype=dtype):
+      self.clear_cache()
+      iter_ = z.shape[2]
+      x = self.conv2(z)
+      for i in range(iter_):
+        self._conv_idx = [0]
+        if i == 0:
+          out = self.decoder(x[:, :, i : i + 1, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
+        else:
+          out_ = self.decoder(x[:, :, i : i + 1, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
+          out = torch.cat([out, out_], 2)
+      self.clear_cache()
+      return out
 
   def clear_cache(self):
     self._conv_num = count_conv3d(self.decoder)
     self._conv_idx = [0]
     self._feat_map = [None] * self._conv_num
-    # cache encode
     self._enc_conv_num = count_conv3d(self.encoder)
     self._enc_conv_idx = [0]
     self._enc_feat_map = [None] * self._enc_conv_num
-
-
-def _video_vae(pretrained_path=None, z_dim=None, device='cpu', **kwargs):
-  """
-  Autoencoder3d adapted from Stable Diffusion 1.x, 2.x and XL.
-  """
-  # params
-  cfg = dict(
-    dim=96,
-    z_dim=z_dim,
-    dim_mult=[1, 2, 4, 4],
-    num_res_blocks=2,
-    attn_scales=[],
-    temperal_downsample=[False, True, True],
-    dropout=0.0,
-  )
-  cfg.update(**kwargs)
-
-  # init model
-  with torch.device('meta'):
-    model = WanVAE_(**cfg)
-
-  # load checkpoint
-  logging.info(f'loading {pretrained_path}')
-  if str(pretrained_path).endswith(".safetensors"):
-    model.load_state_dict(load_safetensors_file(pretrained_path, device=str(device)), assign=True)
-  else:
-    model.load_state_dict(torch.load(pretrained_path, map_location=device), assign=True)
-
-  return model
-
-
-class Wan2_1_VAE:
-  def __init__(self, config: WanVAEConfig, vae_pth='cache/vae_step_411000.pth'):
-    self.z_dim = config.arch_config.z_dim
-
-    self.latents_mean = list(config.arch_config.latents_mean)
-    self.latents_std = list(config.arch_config.latents_std)
-
-    device = get_local_torch_device()
-
-    # init model
-    self.model = (
-      _video_vae(
-        pretrained_path=vae_pth,
-        z_dim=self.z_dim,
-      )
-      .eval()
-      .requires_grad_(False)
-      .to(device)
-    )
-    _to_vae_channels_last(self.model)
-
-  def encode(self, videos):
-    """
-    videos: A list of videos each with shape [C, T, H, W].
-    """
-    dtype = next(self.model.parameters()).dtype
-    with torch.amp.autocast("cuda", dtype=dtype):
-      return self.model.encode(videos)
-
-  def decode(self, zs):
-    dtype = next(self.model.parameters()).dtype
-    with torch.amp.autocast("cuda", dtype=dtype):
-      return self.model.decode(zs)

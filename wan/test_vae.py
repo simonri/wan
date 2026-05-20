@@ -150,13 +150,15 @@ def main():
   args = parse_args()
   local_torch_device = get_local_torch_device()
 
-  wan_pipeline_config = WanI2VConfig()
+  pipeline_config = WanI2VConfig()
 
-  vae = Wan2_1_VAE(config=wan_pipeline_config.vae_config, vae_pth=VAE_PATH)
+  vae = Wan2_1_VAE(config=pipeline_config.vae_config)
 
-  server_args = ServerArgs(pipeline_config=wan_pipeline_config)
+  server_args = ServerArgs(pipeline_config=pipeline_config)
   image_encoding_stage = ImageVAEEncodingStage(vae=vae)
   decoding_stage = DecodingStage(vae=vae)
+
+  vae.load(VAE_PATH, server_args)
 
   if args.nsys:
     profile_nsys(image_encoding_stage, server_args, vae)

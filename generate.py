@@ -30,16 +30,16 @@ def generate(args):
   )
 
   cfg = WanI2VConfig()
+  server_args = ServerArgs(pipeline_config=cfg)
 
   logging.info("Creating WanI2V pipeline.")
   executor = SyncExecutor()
 
   wan_i2v = WanImageToVideoPipeline(
-    config=cfg,
+    server_args=server_args,
     executor=executor,
   )
 
-  server_args = ServerArgs(pipeline_config=cfg)
   sampling_params = Wan2_2_I2V_SamplingParam(height=832, width=480, num_frames=81, num_inference_steps=8)
 
   req = Req(

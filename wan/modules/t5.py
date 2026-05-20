@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from wan.configs.models.encoders.t5 import T5Config
 from wan.platform import get_local_torch_device
+from wan.server_args import ServerArgs
 
 
 def fp16_clamp(x):
@@ -233,21 +234,8 @@ class T5Encoder(nn.Module):
 
 
 class T5EncoderModel:
-  def __init__(
-    self,
-    config: T5Config,
-    dtype: torch.dtype = torch.bfloat16,
-    checkpoint_path: str | None = None,
-  ):
-    local_torch_device = get_local_torch_device()
-
-    self.dtype = dtype
-    self.checkpoint_path = checkpoint_path
-
-    if checkpoint_path is None:
-      raise ValueError("checkpoint_path must be provided")
-
-    model = T5Encoder(
+  def __init__(self, config: T5Config):
+    self.model = T5Encoder(
       vocab=config.arch_config.vocab_size,
       dim=config.arch_config.dim,
       dim_attn=config.arch_config.dim_attn,
@@ -259,9 +247,9 @@ class T5EncoderModel:
       dropout=config.arch_config.dropout,
     )
 
-    state_dict = torch.load(checkpoint_path, map_location="cpu", mmap=True, weights_only=True)
-    model.load_state_dict(state_dict, assign=True)
+  def load(self, model_path: str, server_args: ServerArgs):
+    target_device = get_local_torch_device()
+    self.model.to(target_device)
 
-    model = model.to(dtype=dtype, device=local_torch_device)
-
-    self.model = model.eval().requires_grad_(False)
+    state_dict = torch.load(model_path, map_location=target_device, weights_only=True)
+    self.model.load_state_dict(state_dict, strict=False)
