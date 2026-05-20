@@ -7,7 +7,13 @@ from wan.configs.models.vaes.base import VAEArchConfig, VAEConfig
 
 @dataclass
 class WanVAEArchConfig(VAEArchConfig):
+  base_dim: int = 96
   z_dim: int = 16
+  dim_mult: tuple[int, ...] = (1, 2, 4, 4)
+  num_res_blocks: int = 2
+  attn_scales: tuple[float, ...] = ()
+  temperal_downsample: tuple[bool, ...] = (False, True, True)
+  dropout: float = 0.0
   latents_mean: tuple[float, ...] = (
     -0.7571,
     -0.7089,

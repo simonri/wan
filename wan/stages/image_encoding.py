@@ -1,11 +1,12 @@
 import PIL.Image
 import torch
 
-from wan.modules.vae2_1 import Wan2_1_VAE
+from wan.modules.wanvae import Wan2_1_VAE
 from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
+from wan.torch_utils import PRECISION_TO_TYPE
 from wan.vision_utils import normalize, numpy_to_pt, pil_to_numpy
 
 
@@ -35,6 +36,7 @@ class ImageVAEEncodingStage(PipelineStage):
       return batch
 
     num_frames = batch.num_frames
+    local_device = get_local_torch_device()
 
     images = batch.vae_image if batch.vae_image is not None else batch.condition_image
     if not isinstance(images, list):
@@ -42,9 +44,9 @@ class ImageVAEEncodingStage(PipelineStage):
 
     all_image_latents = []
 
-    for image in images:
-      local_device = get_local_torch_device()
+    vae_dtype = PRECISION_TO_TYPE[server_args.pipeline_config.vae_precision]
 
+    for image in images:
       image = self.preprocess(image).to(local_device, dtype=torch.float32)
 
       # (B, C, H, W) -> (B, C, 1, H, W)
@@ -67,12 +69,11 @@ class ImageVAEEncodingStage(PipelineStage):
           dim=2,
         )
 
-      video_condition = video_condition.to(local_device, dtype=torch.float32)
+      video_condition = video_condition.to(local_device, dtype=vae_dtype)
 
       # encode image
       latent_dist = self.vae.encode(video_condition)
 
-      # assume argmax
       latent_condition = latent_dist.mode()
 
       scaling_factor, shift_factor = server_args.pipeline_config.get_decode_scale_and_shift(

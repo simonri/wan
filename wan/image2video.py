@@ -15,7 +15,7 @@ from transformers import AutoTokenizer
 from wan.configs.pipeline.wan import WanI2VConfig
 from wan.modules.model import WanModel
 from wan.modules.t5 import T5EncoderModel
-from wan.modules.vae2_1 import Wan2_1_VAE
+from wan.modules.wanvae import Wan2_1_VAE
 from wan.stages.schedule_batch import Req
 from wan.stages.text_encoding import TextEncodingStage
 from wan.utils.fm_solvers import FlowDPMSolverMultistepScheduler, get_sampling_sigmas, retrieve_timesteps

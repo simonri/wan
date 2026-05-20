@@ -332,15 +332,16 @@ class Encoder3d(nn.Module):
     self,
     dim=128,
     z_dim=4,
-    dim_mult=[1, 2, 4, 4],
+    dim_mult=(1, 2, 4, 4),
     num_res_blocks=2,
-    attn_scales=[],
-    temperal_downsample=[True, True, False],
+    attn_scales=(),
+    temperal_downsample=(True, True, False),
     dropout=0.0,
   ):
     super().__init__()
     self.dim = dim
     self.z_dim = z_dim
+    dim_mult = list(dim_mult)
     self.dim_mult = dim_mult
     self.num_res_blocks = num_res_blocks
     self.attn_scales = attn_scales
@@ -431,6 +432,7 @@ class Decoder3d(nn.Module):
     dropout=0.0,
   ):
     super().__init__()
+    dim_mult = list(dim_mult)
     self.dim = dim
     self.z_dim = z_dim
     self.dim_mult = dim_mult
@@ -537,22 +539,30 @@ def count_cache_layers(model):
 class Wan2_1_VAE(nn.Module):
   def __init__(self, config: WanVAEConfig):
     super().__init__()
-    self.z_dim = config.arch_config.z_dim
-    self.latents_mean = list(config.arch_config.latents_mean)
-    self.latents_std = list(config.arch_config.latents_std)
+    self.z_dim = config.z_dim
+    self.latents_mean = list(config.latents_mean)
+    self.latents_std = list(config.latents_std)
 
-    dim = 96
-    dim_mult = [1, 2, 4, 4]
-    num_res_blocks = 2
-    attn_scales = []
-    temperal_downsample = [False, True, True]
-    temperal_upsample = temperal_downsample[::-1]
-    dropout = 0.0
-
-    self.encoder = Encoder3d(dim, self.z_dim * 2, dim_mult, num_res_blocks, attn_scales, temperal_downsample, dropout)
+    self.encoder = Encoder3d(
+      config.base_dim,
+      self.z_dim * 2,
+      config.dim_mult,
+      config.num_res_blocks,
+      config.attn_scales,
+      config.temperal_downsample,
+      config.dropout,
+    )
     self.conv1 = CausalConv3d(self.z_dim * 2, self.z_dim * 2, 1)
     self.conv2 = CausalConv3d(self.z_dim, self.z_dim, 1)
-    self.decoder = Decoder3d(dim, self.z_dim, dim_mult, num_res_blocks, attn_scales, temperal_upsample, dropout)
+    self.decoder = Decoder3d(
+      config.base_dim,
+      self.z_dim,
+      config.dim_mult,
+      config.num_res_blocks,
+      config.attn_scales,
+      config.temperal_downsample[::-1],
+      config.dropout,
+    )
 
     _to_vae_channels_last(self)
 

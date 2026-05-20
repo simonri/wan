@@ -8,7 +8,7 @@ from wan.bench.layer_timer import LayerTimer
 from wan.bench.nvtx_marker import NVTXMarker, cuda_profiler_start, cuda_profiler_stop
 from wan.configs.pipeline.wan import WanI2VConfig
 from wan.configs.sample.wan import Wan2_2_I2V_SamplingParam
-from wan.modules.vae2_1 import Wan2_1_VAE
+from wan.modules.wanvae import Wan2_1_VAE
 from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.decoding import DecodingStage

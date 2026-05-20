@@ -1,7 +1,7 @@
 from transformers import AutoTokenizer
 
 from wan.modules.t5 import T5EncoderModel
-from wan.modules.vae2_1 import Wan2_1_VAE
+from wan.modules.wanvae import Wan2_1_VAE
 from wan.pipeline.base import PipelineBase
 from wan.pipeline.executor import BaseExecutor
 from wan.server_args import ServerArgs
