@@ -1,10 +1,10 @@
 from dataclasses import MISSING, dataclass, field, fields
+from typing import Any
 
 import PIL.Image
 import torch
 
 from wan.configs.sample.base import SamplingParams
-
 
 SAMPLING_PARAMS_FIELDS = {f.name for f in fields(SamplingParams)}
 
@@ -85,3 +85,8 @@ class Req:
       return
 
     object.__setattr__(self, name, value)
+
+
+@dataclass
+class OutputBatch:
+  output: Any | None = None

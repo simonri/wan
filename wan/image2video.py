@@ -10,11 +10,11 @@ import torchvision.transforms.functional as TF
 from accelerate import init_empty_weights
 from safetensors.torch import load_file as load_safetensors_file
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
 from wan.configs.pipeline.wan import WanI2VConfig
 from wan.modules.model import WanModel
 from wan.modules.t5 import T5EncoderModel
-from wan.modules.tokenizers import HuggingfaceTokenizer
 from wan.modules.vae2_1 import Wan2_1_VAE
 from wan.stages.schedule_batch import Req
 from wan.stages.text_encoding import TextEncodingStage
@@ -222,7 +222,7 @@ class WanI2V:
       checkpoint_path=dit_cfg.t5_checkpoint,
     )
 
-    self.tokenizer = HuggingfaceTokenizer(name=dit_cfg.t5_tokenizer, seq_len=dit_cfg.text_len, clean='whitespace')
+    self.tokenizer = AutoTokenizer.from_pretrained(dit_cfg.t5_tokenizer)
 
     self.vae = Wan2_1_VAE(vae_pth=dit_cfg.vae_checkpoint, device=self.device)
 

@@ -1,19 +1,72 @@
-# Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import logging
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from safetensors.torch import load_file as load_safetensors_file
 
+from wan.configs.models.vaes.wanvae import WanVAEConfig
 from wan.kernels.rsnorm import rms_norm_triton
-
-__all__ = [
-  'Wan2_1_VAE',
-]
+from wan.platform import get_local_torch_device
 
 CACHE_T = 2
+
+
+class DiagonalGaussianDistribution:
+  def __init__(self, parameters: torch.Tensor, deterministic: bool = False):
+    self.parameters = parameters
+    self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
+    self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
+    self.deterministic = deterministic
+    self.std = torch.exp(0.5 * self.logvar)
+    self.var = torch.exp(self.logvar)
+    if self.deterministic:
+      self.var = self.std = torch.zeros_like(self.mean, device=self.parameters.device, dtype=self.parameters.dtype)
+
+  def sample(self, generator: torch.Generator | None = None) -> torch.Tensor:
+    # make sure sample is on the same device as the parameters and has same dtype
+    sample = randn_tensor(
+      self.mean.shape,
+      generator=generator,
+      device=self.parameters.device,
+      dtype=self.parameters.dtype,
+    )
+    x = self.mean + self.std * sample
+    return x
+
+  def kl(
+    self,
+    other: "DiagonalGaussianDistribution | None" = None,
+    dims: tuple[int, ...] = (1, 2, 3),
+  ) -> torch.Tensor:
+    if self.deterministic:
+      return torch.Tensor([0.0])
+    else:
+      if other is None:
+        return 0.5 * torch.sum(
+          torch.pow(self.mean, 2) + self.var - 1.0 - self.logvar,
+          dim=dims,
+        )
+      else:
+        return 0.5 * torch.sum(
+          torch.pow(self.mean - other.mean, 2) / other.var + self.var / other.var - 1.0 - self.logvar + other.logvar,
+          dim=dims,
+        )
+
+  def nll(self, sample: torch.Tensor, dims: tuple[int, ...] = (1, 2, 3)) -> torch.Tensor:
+    if self.deterministic:
+      return torch.Tensor([0.0])
+    logtwopi = np.log(2.0 * np.pi)
+    return 0.5 * torch.sum(
+      logtwopi + self.logvar + torch.pow(sample - self.mean, 2) / self.var,
+      dim=dims,
+    )
+
+  def mode(self) -> torch.Tensor:
+    return self.mean
 
 
 class CausalConv3d(nn.Conv3d):
@@ -54,7 +107,9 @@ class RMS_norm(nn.Module):
   def __init__(self, dim, channel_first=True, images=True, bias=False, eps=1e-6, fused_silu=False):
     super().__init__()
     if fused_silu and bias:
-      raise ValueError("RMS_norm does not support fused_silu with bias=True (changes order: silu(x*w) + b vs silu(x*w + b))")
+      raise ValueError(
+        "RMS_norm does not support fused_silu with bias=True (changes order: silu(x*w) + b vs silu(x*w + b))"
+      )
     broadcastable_dims = (1, 1, 1) if not images else (1, 1)
     shape = (dim, *broadcastable_dims) if channel_first else (dim,)
 
@@ -115,9 +170,13 @@ class Resample(nn.Module):
 
     # layers
     if mode == 'upsample2d':
-      self.resample = nn.Sequential(Upsample(scale_factor=(2.0, 2.0), mode='nearest-exact'), nn.Conv2d(dim, dim // 2, 3, padding=1))
+      self.resample = nn.Sequential(
+        Upsample(scale_factor=(2.0, 2.0), mode='nearest-exact'), nn.Conv2d(dim, dim // 2, 3, padding=1)
+      )
     elif mode == 'upsample3d':
-      self.resample = nn.Sequential(Upsample(scale_factor=(2.0, 2.0), mode='nearest-exact'), nn.Conv2d(dim, dim // 2, 3, padding=1))
+      self.resample = nn.Sequential(
+        Upsample(scale_factor=(2.0, 2.0), mode='nearest-exact'), nn.Conv2d(dim, dim // 2, 3, padding=1)
+      )
       self.time_conv = CausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0))
 
     elif mode == 'downsample2d':
@@ -270,7 +329,16 @@ class AttentionBlock(nn.Module):
 
 
 class Encoder3d(nn.Module):
-  def __init__(self, dim=128, z_dim=4, dim_mult=[1, 2, 4, 4], num_res_blocks=2, attn_scales=[], temperal_downsample=[True, True, False], dropout=0.0):
+  def __init__(
+    self,
+    dim=128,
+    z_dim=4,
+    dim_mult=[1, 2, 4, 4],
+    num_res_blocks=2,
+    attn_scales=[],
+    temperal_downsample=[True, True, False],
+    dropout=0.0,
+  ):
     super().__init__()
     self.dim = dim
     self.z_dim = z_dim
@@ -304,10 +372,14 @@ class Encoder3d(nn.Module):
     self.downsamples = nn.Sequential(*downsamples)
 
     # middle blocks
-    self.middle = nn.Sequential(ResidualBlock(out_dim, out_dim, dropout), AttentionBlock(out_dim), ResidualBlock(out_dim, out_dim, dropout))
+    self.middle = nn.Sequential(
+      ResidualBlock(out_dim, out_dim, dropout), AttentionBlock(out_dim), ResidualBlock(out_dim, out_dim, dropout)
+    )
 
     # output blocks (SiLU fused into preceding RMS_norm)
-    self.head = nn.Sequential(RMS_norm(out_dim, images=False, fused_silu=True), nn.Identity(), CausalConv3d(out_dim, z_dim, 3, padding=1))
+    self.head = nn.Sequential(
+      RMS_norm(out_dim, images=False, fused_silu=True), nn.Identity(), CausalConv3d(out_dim, z_dim, 3, padding=1)
+    )
 
   def forward(self, x, feat_cache=None, feat_idx=[0], final=False):
     if feat_cache is not None:
@@ -349,7 +421,16 @@ class Encoder3d(nn.Module):
 
 
 class Decoder3d(nn.Module):
-  def __init__(self, dim=128, z_dim=4, dim_mult=[1, 2, 4, 4], num_res_blocks=2, attn_scales=[], temperal_upsample=[False, True, True], dropout=0.0):
+  def __init__(
+    self,
+    dim=128,
+    z_dim=4,
+    dim_mult=[1, 2, 4, 4],
+    num_res_blocks=2,
+    attn_scales=[],
+    temperal_upsample=[False, True, True],
+    dropout=0.0,
+  ):
     super().__init__()
     self.dim = dim
     self.z_dim = z_dim
@@ -366,7 +447,9 @@ class Decoder3d(nn.Module):
     self.conv1 = CausalConv3d(z_dim, dims[0], 3, padding=1)
 
     # middle blocks
-    self.middle = nn.Sequential(ResidualBlock(dims[0], dims[0], dropout), AttentionBlock(dims[0]), ResidualBlock(dims[0], dims[0], dropout))
+    self.middle = nn.Sequential(
+      ResidualBlock(dims[0], dims[0], dropout), AttentionBlock(dims[0]), ResidualBlock(dims[0], dims[0], dropout)
+    )
 
     # upsample blocks
     upsamples = []
@@ -388,7 +471,9 @@ class Decoder3d(nn.Module):
     self.upsamples = nn.Sequential(*upsamples)
 
     # output blocks (SiLU fused into preceding RMS_norm)
-    self.head = nn.Sequential(RMS_norm(out_dim, images=False, fused_silu=True), nn.Identity(), CausalConv3d(out_dim, 3, 3, padding=1))
+    self.head = nn.Sequential(
+      RMS_norm(out_dim, images=False, fused_silu=True), nn.Identity(), CausalConv3d(out_dim, 3, 3, padding=1)
+    )
 
   def forward(self, x, feat_cache=None, feat_idx=[0]):
     # conv1
@@ -451,7 +536,16 @@ def count_cache_layers(model):
 
 
 class WanVAE_(nn.Module):
-  def __init__(self, dim=128, z_dim=4, dim_mult=[1, 2, 4, 4], num_res_blocks=2, attn_scales=[], temperal_downsample=[True, True, False], dropout=0.0):
+  def __init__(
+    self,
+    dim=128,
+    z_dim=4,
+    dim_mult=[1, 2, 4, 4],
+    num_res_blocks=2,
+    attn_scales=[],
+    temperal_downsample=[True, True, False],
+    dropout=0.0,
+  ):
     super().__init__()
     self.dim = dim
     self.z_dim = z_dim
@@ -473,7 +567,8 @@ class WanVAE_(nn.Module):
     x_recon = self.decode(z)
     return x_recon, mu, log_var
 
-  def encode(self, x, scale):
+  def encode(self, x: torch.Tensor) -> torch.Tensor:
+    self.clear_cache()
     conv_idx = [0]
     # cache
     t = x.shape[2]
@@ -490,28 +585,24 @@ class WanVAE_(nn.Module):
       if i == 0:
         out = self.encoder(x[:, :, :1, :, :], feat_cache=feat_map, feat_idx=conv_idx)
       else:
-        out_ = self.encoder(x[:, :, 1 + 2 * (i - 1) : 1 + 2 * i, :, :], feat_cache=feat_map, feat_idx=conv_idx, final=(i == (iter_ - 1)))
+        out_ = self.encoder(
+          x[:, :, 1 + 2 * (i - 1) : 1 + 2 * i, :, :], feat_cache=feat_map, feat_idx=conv_idx, final=(i == (iter_ - 1))
+        )
         if out_ is None:
           continue
         out = torch.cat([out, out_], 2)
 
-    mu, log_var = self.conv1(out).chunk(2, dim=1)
+    enc = self.conv1(out)
+    mu, logvar = enc[:, : self.z_dim, :, :, :], enc[:, self.z_dim :, :, :, :]
+    enc = torch.cat([mu, logvar], dim=1)
+    enc = DiagonalGaussianDistribution(enc)
 
-    if isinstance(scale[0], torch.Tensor):
-      mu = (mu - scale[0].view(1, self.z_dim, 1, 1, 1)) * scale[1].view(1, self.z_dim, 1, 1, 1)
-    else:
-      mu = (mu - scale[0]) * scale[1]
+    return enc
 
-    return mu
-
-  def decode(self, z, scale):
+  def decode(self, z: torch.Tensor) -> torch.Tensor:
     self.clear_cache()
-    # z: [b,c,t,h,w]
-    if isinstance(scale[0], torch.Tensor):
-      z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(1, self.z_dim, 1, 1, 1)
-    else:
-      z = z / scale[1] + scale[0]
     iter_ = z.shape[2]
+
     x = self.conv2(z)
     for i in range(iter_):
       self._conv_idx = [0]
@@ -550,7 +641,15 @@ def _video_vae(pretrained_path=None, z_dim=None, device='cpu', **kwargs):
   Autoencoder3d adapted from Stable Diffusion 1.x, 2.x and XL.
   """
   # params
-  cfg = dict(dim=96, z_dim=z_dim, dim_mult=[1, 2, 4, 4], num_res_blocks=2, attn_scales=[], temperal_downsample=[False, True, True], dropout=0.0)
+  cfg = dict(
+    dim=96,
+    z_dim=z_dim,
+    dim_mult=[1, 2, 4, 4],
+    num_res_blocks=2,
+    attn_scales=[],
+    temperal_downsample=[False, True, True],
+    dropout=0.0,
+  )
   cfg.update(**kwargs)
 
   # init model
@@ -568,26 +667,23 @@ def _video_vae(pretrained_path=None, z_dim=None, device='cpu', **kwargs):
 
 
 class Wan2_1_VAE:
-  def __init__(self, z_dim=16, vae_pth='cache/vae_step_411000.pth', dtype=torch.bfloat16, device="cuda"):
-    self.dtype = dtype
-    self.device = device
+  def __init__(self, config: WanVAEConfig, vae_pth='cache/vae_step_411000.pth'):
+    self.z_dim = config.arch_config.z_dim
 
-    mean = [-0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508, 0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921]
-    std = [2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743, 3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160]
-    self.mean = torch.tensor(mean, dtype=dtype, device=device)
-    self.std = torch.tensor(std, dtype=dtype, device=device)
-    self.scale = [self.mean, 1.0 / self.std]
+    self.latents_mean = list(config.arch_config.latents_mean)
+    self.latents_std = list(config.arch_config.latents_std)
+
+    device = get_local_torch_device()
 
     # init model
     self.model = (
       _video_vae(
         pretrained_path=vae_pth,
-        z_dim=z_dim,
+        z_dim=self.z_dim,
       )
       .eval()
       .requires_grad_(False)
       .to(device)
-      .to(dtype)
     )
     _to_vae_channels_last(self.model)
 
@@ -595,11 +691,11 @@ class Wan2_1_VAE:
     """
     videos: A list of videos each with shape [C, T, H, W].
     """
-    with torch.amp.autocast("cuda", dtype=self.dtype):
-      return [self.model.encode(u.unsqueeze(0).contiguous(memory_format=torch.channels_last_3d), self.scale).float().squeeze(0) for u in videos]
+    dtype = next(self.model.parameters()).dtype
+    with torch.amp.autocast("cuda", dtype=dtype):
+      return self.model.encode(videos)
 
   def decode(self, zs):
-    with torch.amp.autocast("cuda", dtype=self.dtype):
-      return [
-        self.model.decode(u.unsqueeze(0).contiguous(memory_format=torch.channels_last_3d), self.scale).float().clamp_(-1, 1).squeeze(0) for u in zs
-      ]
+    dtype = next(self.model.parameters()).dtype
+    with torch.amp.autocast("cuda", dtype=dtype):
+      return self.model.decode(zs)

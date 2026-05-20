@@ -1,3 +1,0 @@
-# Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-from . import configs, modules
-from .image2video import WanI2V

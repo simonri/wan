@@ -4,9 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from wan.platform import get_local_torch_device
-
 from wan.configs.models.encoders.t5 import T5Config
+from wan.platform import get_local_torch_device
 
 
 def fp16_clamp(x):

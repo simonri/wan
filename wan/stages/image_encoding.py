@@ -40,6 +40,8 @@ class ImageVAEEncodingStage(PipelineStage):
     if not isinstance(images, list):
       images = [images]
 
+    all_image_latents = []
+
     for image in images:
       local_device = get_local_torch_device()
 
@@ -69,4 +71,28 @@ class ImageVAEEncodingStage(PipelineStage):
 
       # encode image
       latent_dist = self.vae.encode(video_condition)
-      print(f"Encoded {len(latent_dist)} frames")
+
+      # assume argmax
+      latent_condition = latent_dist.mode()
+
+      scaling_factor, shift_factor = server_args.pipeline_config.get_decode_scale_and_shift(
+        device=latent_condition.device,
+        dtype=latent_condition.dtype,
+        vae=self.vae,
+      )
+
+      if isinstance(shift_factor, torch.Tensor):
+        shift_factor = shift_factor.to(latent_condition.device)
+
+      if isinstance(scaling_factor, torch.Tensor):
+        scaling_factor = scaling_factor.to(latent_condition.device)
+
+      latent_condition -= shift_factor
+      latent_condition = latent_condition * scaling_factor
+
+      image_latent = server_args.pipeline_config.postprocess_image_latent(latent_condition, batch)
+      all_image_latents.append(image_latent)
+
+    batch.image_latent = torch.cat(all_image_latents, dim=1)
+
+    return batch

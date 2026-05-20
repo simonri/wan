@@ -1,14 +1,19 @@
 import argparse
 import statistics
 
+import PIL.Image
 import torch
-import torchvision.transforms.functional as TF
-from PIL import Image
 
-from .bench.layer_timer import LayerTimer
-from .bench.nvtx_marker import NVTXMarker, cuda_profiler_start, cuda_profiler_stop
-from .modules.vae2_1 import Wan2_1_VAE
-from .utils.utils import save_video
+from wan.bench.layer_timer import LayerTimer
+from wan.bench.nvtx_marker import NVTXMarker, cuda_profiler_start, cuda_profiler_stop
+from wan.configs.pipeline.wan import WanI2VConfig
+from wan.configs.sample.wan import Wan2_2_I2V_SamplingParam
+from wan.modules.vae2_1 import Wan2_1_VAE
+from wan.platform import get_local_torch_device
+from wan.server_args import ServerArgs
+from wan.stages.decoding import DecodingStage
+from wan.stages.image_encoding import ImageVAEEncodingStage
+from wan.stages.schedule_batch import Req
 
 VAE_PATH = "models/vae/wan_2.1_vae.safetensors"
 IMAGE_PATH = "examples/i2v_input.JPG"
@@ -54,66 +59,57 @@ def parse_args():
   return parser.parse_args()
 
 
-def build_video(device):
-  img = Image.open(IMAGE_PATH).convert("RGB")
-  img = img.resize(IMAGE_SIZE)
-  img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(device)  # [0, 1] -> [-1, 1]
-  h, w = img.shape[1:]
-
-  print(f"Image size: {h}x{w}")
-
-  return torch.cat(
-    [
-      img[:, None],
-      torch.zeros(3, FRAME_NUM - 1, h, w, device=device, dtype=img.dtype),
-    ],
-    dim=1,
-  )
+def make_batch():
+  image = PIL.Image.open(IMAGE_PATH).convert("RGB").resize(IMAGE_SIZE)
+  sampling_params = Wan2_2_I2V_SamplingParam(height=IMAGE_SIZE[1], width=IMAGE_SIZE[0], num_frames=FRAME_NUM)
+  return Req(sampling_params=sampling_params, condition_image=image)
 
 
-def encode_once(vae, video):
+def encode_once(stage, server_args):
+  batch = make_batch()
   with torch.inference_mode():
-    y = vae.encode([video])[0]
-  return y
+    stage(batch, server_args)
+  return batch.image_latent
 
 
-def decode_once(vae, z):
-  with torch.inference_mode():
-    y = vae.decode([z])[0]
-  return y
-
-
-def warmup(vae, video, run_count=3):
+def warmup(stage, server_args, run_count=3):
   for _ in range(run_count):
-    _ = encode_once(vae, video)
+    _ = encode_once(stage, server_args)
   torch.cuda.synchronize()
 
 
-def compare_encoded(vae, video):
-  y = encode_once(vae, video)
-  orig = torch.load(ENCODED_PATH, map_location=video.device)
+def compare_encoded(stage, decoding_stage, server_args, device):
+  y = encode_once(stage, server_args)
+  orig = torch.load(ENCODED_PATH, map_location=device)
   print(orig.shape)
 
-  decoded = decode_once(vae, orig)
+  # encoded.pt was saved before the I2V mask channels were appended; compare only the latent portion.
+  y_latent = y[:, : orig.shape[0]]
 
-  save_video(tensor=decoded.unsqueeze(0), save_file="decoded.mp4", fps=16, nrow=1, normalize=True, value_range=(-1, 1))
+  decode_batch = Req()
+  decode_batch.latents = y_latent
+  output_batch = decoding_stage(decode_batch, server_args)
+  decoded = output_batch.output  # [B, C, T, H, W] in [0, 1]
 
-  if torch.allclose(orig, y):
+  first_frame = decoded[0, :, 0].clamp(0, 1).cpu()
+  PIL.Image.fromarray((first_frame.permute(1, 2, 0) * 255).to(torch.uint8).numpy()).save("decoded.png")
+
+  if torch.allclose(orig, y_latent.squeeze(0)):
     print("Original and encoded video are the same")
     return
 
-  max_diff = (orig - y).abs().max().item()
+  max_diff = (orig - y_latent.squeeze(0)).abs().max().item()
   print(f"Original and encoded video are different; max abs diff: {max_diff:.8f}")
 
 
-def benchmark(vae, video):
+def benchmark(stage, server_args):
   times = []
   run_count = 10
   for _ in range(run_count):
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
-    _ = encode_once(vae, video)
+    _ = encode_once(stage, server_args)
     end.record()
     torch.cuda.synchronize()
     times.append(start.elapsed_time(end) / 1000)
@@ -125,22 +121,22 @@ def benchmark(vae, video):
   print(f"Std:    {statistics.pstdev(times):.6f} sec")
 
 
-def profile_nsys(vae, video):
-  warmup(vae, video, run_count=2)
+def profile_nsys(stage, server_args, vae):
+  warmup(stage, server_args, run_count=2)
   cuda_profiler_start()
-  with torch.inference_mode(), NVTXMarker(vae.model):
+  with NVTXMarker(vae.model):
     torch.cuda.nvtx.range_push("encode")
-    _ = vae.encode([video])[0]
+    _ = encode_once(stage, server_args)
     torch.cuda.synchronize()
     torch.cuda.nvtx.range_pop()
   cuda_profiler_stop()
 
 
-def profile_layers(vae, video, limit, name_filter, include_parents):
-  warmup(vae, video, run_count=1)
+def profile_layers(stage, server_args, vae, limit, name_filter, include_parents):
+  warmup(stage, server_args, run_count=1)
 
-  with torch.inference_mode(), LayerTimer(vae.model, name_filter=name_filter, include_parents=include_parents) as timer:
-    _ = vae.encode([video])[0]
+  with LayerTimer(vae.model, name_filter=name_filter, include_parents=include_parents) as timer:
+    _ = encode_once(stage, server_args)
 
   if include_parents:
     print("Note: parent module timings include child module time.")
@@ -152,22 +148,27 @@ def profile_layers(vae, video, limit, name_filter, include_parents):
 
 def main():
   args = parse_args()
-  device = torch.device("cuda:0")
-  torch.backends.cudnn.benchmark = True
+  local_torch_device = get_local_torch_device()
 
-  vae = Wan2_1_VAE(vae_pth=VAE_PATH, device=device)
+  wan_pipeline_config = WanI2VConfig()
 
-  video = build_video(device)
+  vae = Wan2_1_VAE(config=wan_pipeline_config.vae_config, vae_pth=VAE_PATH)
+
+  server_args = ServerArgs(pipeline_config=wan_pipeline_config)
+  image_encoding_stage = ImageVAEEncodingStage(vae=vae)
+  decoding_stage = DecodingStage(vae=vae)
 
   if args.nsys:
-    profile_nsys(vae, video)
+    profile_nsys(image_encoding_stage, server_args, vae)
   elif args.profile_layers:
-    profile_layers(vae, video, args.profile_limit, args.profile_filter, args.profile_parents)
+    profile_layers(
+      image_encoding_stage, server_args, vae, args.profile_limit, args.profile_filter, args.profile_parents
+    )
   elif args.benchmark:
-    warmup(vae, video)
-    benchmark(vae, video)
+    warmup(image_encoding_stage, server_args)
+    benchmark(image_encoding_stage, server_args)
   else:
-    compare_encoded(vae, video)
+    compare_encoded(image_encoding_stage, decoding_stage, server_args, local_torch_device)
 
 
 if __name__ == "__main__":

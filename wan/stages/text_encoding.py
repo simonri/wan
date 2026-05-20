@@ -1,15 +1,15 @@
 import torch
+from transformers import AutoTokenizer
 
-from wan.configs.pipeline.base import PipelineConfig
 from wan.modules.t5 import T5EncoderModel
-from wan.modules.tokenizers import HuggingfaceTokenizer
+from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
 
 
 class TextEncodingStage(PipelineStage):
-  def __init__(self, text_encoder: T5EncoderModel, tokenizer: HuggingfaceTokenizer):
+  def __init__(self, text_encoder: T5EncoderModel, tokenizer: AutoTokenizer):
     super().__init__()
     self.tokenizer = tokenizer
     self.text_encoder = text_encoder
@@ -19,7 +19,7 @@ class TextEncodingStage(PipelineStage):
     prompt_text = batch.prompt
 
     (prompt_embeds_list, prompt_mask_list, pooled_embeds_list, prompt_embeds_mask_list, prompt_seq_lens_list) = (
-      self.encode_text(prompt_text, server_args.pipeline_config)
+      self.encode_text(prompt_text, server_args)
     )
 
     for pe in prompt_embeds_list:
@@ -47,9 +47,7 @@ class TextEncodingStage(PipelineStage):
     return batch
 
   @torch.no_grad()
-  def encode_text(
-    self, text: str | list[str], pipeline_config: PipelineConfig, device: torch.device | str | None = None
-  ):
+  def encode_text(self, text: str | list[str], server_args: ServerArgs, device: torch.device | str | None = None):
     """Encode prompts with T5/UMT5.
 
     Returns:
@@ -60,21 +58,24 @@ class TextEncodingStage(PipelineStage):
       `embeds_masks_list` mirrors `attn_masks_list` (no separate embed mask).
       All tensors are trimmed to the prompt's true length (padding stripped).
     """
-    target_device = torch.device(device) if device is not None else next(self.text_encoder.model.parameters()).device
+    target_device = device if device is not None else get_local_torch_device()
 
     if isinstance(text, str):
       text = [text]
 
-    ids, mask = pipeline_config.tokenize_prompt(text, self.tokenizer, {"return_mask": True})
+    encoder_config = server_args.pipeline_config.text_encoder_config
+    tok_kwargs = encoder_config.arch_config.tokenizer_kwargs
 
-    ids = ids.to(target_device)
-    mask = mask.to(target_device)
-    seq_lens = mask.gt(0).sum(dim=1).long()  # [B]
+    text_inputs = server_args.pipeline_config.tokenize_prompt(text, self.tokenizer, tok_kwargs).to(target_device)
 
-    context = self.text_encoder.model(ids, mask)  # [B, L, D]
+    input_ids = text_inputs["input_ids"]
+    attention_mask = text_inputs.get("attention_mask")
+
+    seq_lens = attention_mask.gt(0).sum(dim=1).long()  # [B]
+    context = self.text_encoder.model(input_ids, attention_mask)  # [B, L, D]
 
     embeds_list = [u[:v] for u, v in zip(context, seq_lens, strict=True)]
-    attn_masks_list = [m[:v] for m, v in zip(mask, seq_lens, strict=True)]
+    attn_masks_list = [m[:v] for m, v in zip(attention_mask, seq_lens, strict=True)]
     pooled_embeds_list = [None] * len(embeds_list)
     embeds_masks_list = attn_masks_list
     seq_lens_list = seq_lens.tolist()

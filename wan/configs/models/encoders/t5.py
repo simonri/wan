@@ -1,8 +1,10 @@
 from dataclasses import dataclass, field
 
+from wan.configs.models.encoders.base import TextEncoderArchConfig, TextEncoderConfig
+
 
 @dataclass
-class T5ArchConfig:
+class T5ArchConfig(TextEncoderArchConfig):
   vocab_size: int = 256384
   dim: int = 4096
   dim_attn: int = 4096
@@ -15,7 +17,16 @@ class T5ArchConfig:
 
   text_len: int = 512
 
+  def __post_init__(self):
+    self.tokenizer_kwargs = {
+      "padding": "max_length",
+      "truncation": True,
+      "max_length": self.text_len,
+      "return_attention_mask": True,
+      "return_tensors": "pt",
+    }
+
 
 @dataclass
-class T5Config:
+class T5Config(TextEncoderConfig):
   arch_config: T5ArchConfig = field(default_factory=T5ArchConfig)
