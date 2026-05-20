@@ -3,6 +3,7 @@ from wan.modules.t5 import T5EncoderModel
 from wan.modules.tokenizers import HuggingfaceTokenizer
 from wan.modules.vae2_1 import Wan2_1_VAE
 from wan.pipeline.base import PipelineBase
+from wan.pipeline.executor import BaseExecutor
 from wan.platform import get_local_torch_device
 from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.input_validation import InputValidationStage
@@ -10,12 +11,12 @@ from wan.stages.text_encoding import TextEncodingStage
 
 
 class WanImageToVideoPipeline(PipelineBase):
-  def __init__(self, config: WanI2VConfig):
-    super().__init__()
+  def __init__(self, config: WanI2VConfig, executor: BaseExecutor):
+    super().__init__(executor)
     self.config = config
 
     print("Loading pipeline modules...")
-    self.modules = self.load_modules()
+    self.modules = self.load_modules(config)
 
     self.create_pipeline_stages(config)
 

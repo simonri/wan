@@ -47,12 +47,3 @@ class WanConfig(DiTConfig):
   # VAE
   vae_checkpoint: str = 'models/vae/wan_2.1_vae.safetensors'
   vae_stride: tuple[int, int, int] = (4, 8, 8)
-
-  # Diffusion / sampler
-  num_train_timesteps: int = 1000
-  sample_fps: int = 16
-  frame_num: int = 81
-  sample_shift: float = 5.0
-  sample_steps: int = 8
-  sample_guide_scale: tuple[float, float] = (1.0, 1.0)  # (low, high)
-  sample_neg_prompt: str = _DEFAULT_NEG_PROMPT
