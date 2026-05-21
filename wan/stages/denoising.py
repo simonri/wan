@@ -1,8 +1,10 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
@@ -19,6 +21,7 @@ class DenoisingContext:
   target_dtype: torch.dtype
   autocast_enabled: bool
   timesteps: torch.Tensor
+  num_inference_steps: int
   latents: torch.Tensor
   boundary_timestep: float | None
   z: torch.Tensor | None
@@ -82,6 +85,7 @@ class DenoisingStage(PipelineStage):
 
     boundary_timestep = self._handle_boundary_ratio(server_args, batch, scheduler)
     timesteps = batch.timesteps
+    num_inference_steps = batch.num_inference_steps
 
     target_dtype = PRECISION_TO_TYPE[server_args.pipeline_config.dit_precision]
     autocast_enabled = target_dtype != torch.float32
@@ -112,6 +116,7 @@ class DenoisingStage(PipelineStage):
       reserved_frames_masks=reserved_frames_masks,
       autocast_enabled=autocast_enabled,
       target_dtype=target_dtype,
+      num_inference_steps=num_inference_steps,
     )
 
   def _select_and_manage_model(
@@ -250,6 +255,12 @@ class DenoisingStage(PipelineStage):
       return_dict=False,
     )[0]
 
+  def _post_denoising_loop(self, batch: Req, latents: torch.Tensor):
+    batch.latents = latents
+
+  def progress_bar(self, iterable: Iterable | None = None, total: int | None = None):
+    return tqdm(iterable, total=total)
+
   @torch.no_grad()
   def forward(self, batch: Req, server_args: ServerArgs) -> Req:
     ctx = self._prepare_denoising_loop(batch, server_args)
@@ -263,16 +274,20 @@ class DenoisingStage(PipelineStage):
       dtype=ctx.target_dtype,
       enabled=ctx.autocast_enabled,
     ):
-      for step_index, t_host in enumerate(timesteps_cpu):
-        step = self._prepare_step_state(
-          ctx,
-          batch,
-          server_args,
-          step_index,
-          t_host,
-          timesteps_cpu,
-        )
+      with self.progress_bar(total=ctx.num_inference_steps) as progress_bar:
+        for step_index, t_host in enumerate(timesteps_cpu):
+          step = self._prepare_step_state(
+            ctx,
+            batch,
+            server_args,
+            step_index,
+            t_host,
+            timesteps_cpu,
+          )
 
-        self._run_denoising_step(ctx, step, batch, server_args)
+          self._run_denoising_step(ctx, step, batch, server_args)
 
+          progress_bar.update()
+
+    self._post_denoising_loop(batch, ctx.latents)
     return batch

@@ -239,3 +239,4 @@ class T5Encoder(nn.Module):
     target_device = get_local_torch_device()
     state_dict = torch.load(model_path, map_location=target_device, weights_only=True)
     self.load_state_dict(state_dict, strict=False)
+    self.eval().requires_grad_(False)

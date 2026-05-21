@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+from datetime import datetime
 
 import torch
 
@@ -10,6 +11,7 @@ from wan.pipeline.executor import SyncExecutor
 from wan.pipeline.wan_i2v_pipeline import WanImageToVideoPipeline
 from wan.server_args import ServerArgs, set_global_server_args
 from wan.stages.schedule_batch import Req
+from wan.utils.utils import save_video
 
 
 def _parse_args():
@@ -41,6 +43,15 @@ def generate(args):
     executor=executor,
   )
 
+  # load loras
+  wan_i2v.set_lora(
+    lora_nickname=["high_noise", "low_noise"],
+    lora_path=[
+      "models/loras/lightning_high_noise_model.safetensors",
+      "models/loras/lightning_low_noise_model.safetensors",
+    ],
+  )
+
   sampling_params = Wan2_2_I2V_SamplingParam(height=832, width=480, num_frames=81, num_inference_steps=8)
 
   req = Req(
@@ -50,16 +61,23 @@ def generate(args):
   req.prompt = args.prompt
   req.image_path = args.image
 
-  wan_i2v.forward(
+  output_batch = wan_i2v.forward(
     req,
     server_args,
   )
 
-  # if args.save_file is None:
-  #   formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-  #   formatted_prompt = args.prompt.replace(" ", "_").replace("/", "_")[:50]
-  #   size = args.size.replace('*', 'x') if sys.platform == 'win32' else args.size
-  #   args.save_file = f"{size}_{formatted_prompt}_{formatted_time}.mp4"
+  if args.save_file is None:
+    formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    args.save_file = f"{formatted_time}.mp4"
+
+  save_video(
+    tensor=output_batch.output,
+    save_file=args.save_file,
+    fps=sampling_params.fps,
+    nrow=1,
+    normalize=True,
+    value_range=(-1, 1),
+  )
 
   # logging.info(f"Saving generated video to {args.save_file}")
   # save_video(

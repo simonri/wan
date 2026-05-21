@@ -322,3 +322,4 @@ class WanModel(ModelMixin, ConfigMixin):
           state_dict[f"blocks.{i}.{new_suffix}"] = state_dict.pop(old_key)
 
     self.load_state_dict(state_dict, strict=True)
+    self.eval().requires_grad_(False)

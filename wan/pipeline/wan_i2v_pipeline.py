@@ -5,8 +5,10 @@ from wan.modules.t5 import T5Encoder
 from wan.modules.wanvae import Wan2_1_VAE
 from wan.pipeline.base import PipelineBase
 from wan.pipeline.executor import BaseExecutor
+from wan.pipeline.lora_pipeline import LoRAPipeline
 from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
+from wan.stages.decoding import DecodingStage
 from wan.stages.denoising import DenoisingStage
 from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.input_validation import InputValidationStage
@@ -17,7 +19,7 @@ from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype, skip_ini
 from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 
-class WanImageToVideoPipeline(PipelineBase):
+class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
   def __init__(self, server_args: ServerArgs, executor: BaseExecutor):
     super().__init__(executor)
     print("Loading pipeline modules...")
@@ -98,3 +100,5 @@ class WanImageToVideoPipeline(PipelineBase):
         vae=self.get_module("vae"),
       )
     )
+
+    self.add_stage(DecodingStage(vae=self.get_module("vae")))

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
-from wan.stages.schedule_batch import Req
+from wan.stages.schedule_batch import OutputBatch, Req
 
 
 class BaseExecutor(ABC):
@@ -10,7 +10,7 @@ class BaseExecutor(ABC):
     self.server_args = server_args
 
   @abstractmethod
-  def execute(self, batch: Req) -> Req:
+  def execute(self, batch: Req) -> OutputBatch:
     raise NotImplementedError
 
 
@@ -22,7 +22,7 @@ class SyncExecutor(BaseExecutor):
     stages: list[PipelineStage],
     batch: Req,
     server_args: ServerArgs,
-  ):
+  ) -> OutputBatch:
     payload = batch
 
     for stage in stages:

@@ -59,6 +59,21 @@ class WanArchConfig(DiTArchConfig):
     }
   )
 
+  lora_param_names_mapping: dict = field(
+    default_factory=lambda: {
+      "self_attn.q": "to_q",
+      "self_attn.k": "to_k",
+      "self_attn.v": "to_v",
+      "self_attn.o": "to_out",
+      "cross_attn.q": "attn2.to_q",
+      "cross_attn.k": "attn2.to_k",
+      "cross_attn.v": "attn2.to_v",
+      "cross_attn.o": "attn2.to_out",
+      "ffn.0": "ffn.fc_in",
+      "ffn.2": "ffn.fc_out",
+    }
+  )
+
   patch_size: tuple[int, int, int] = (1, 2, 2)
   num_attention_heads: int = 40
   freq_dim: int = 256

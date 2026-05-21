@@ -81,7 +81,7 @@ class PipelineConfig:
     )
     mask_lat_size = mask_lat_size.transpose(1, 2)
     mask_lat_size = mask_lat_size.to(latent_condition.device)
-    image_latents = torch.concat([latent_condition, mask_lat_size], dim=1)
+    image_latents = torch.concat([mask_lat_size, latent_condition], dim=1)
     return image_latents
 
   def prepare_latent_shape(self, batch, batch_size, num_frames):

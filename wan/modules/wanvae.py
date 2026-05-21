@@ -535,6 +535,7 @@ class Wan2_1_VAE(nn.Module):
     print(f"Loading VAE from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
     state_dict = safetensors_load_file(model_path)
     self.load_state_dict(state_dict, strict=True)
+    self.eval().requires_grad_(False)
 
   def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
     dtype = next(self.parameters()).dtype

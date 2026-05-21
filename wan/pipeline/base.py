@@ -5,7 +5,7 @@ import torch
 from wan.pipeline.executor import BaseExecutor
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
-from wan.stages.schedule_batch import Req
+from wan.stages.schedule_batch import OutputBatch, Req
 
 
 class PipelineBase(ABC):
@@ -22,5 +22,7 @@ class PipelineBase(ABC):
     return self._stages
 
   @torch.no_grad()
-  def forward(self, batch: Req, server_args: ServerArgs):
-    self.executor.execute(self._stages, batch, server_args)
+  def forward(self, batch: Req, server_args: ServerArgs) -> OutputBatch:
+    print("Running pipeline stages")
+    output_batch = self.executor.execute(self._stages, batch, server_args)
+    return output_batch
