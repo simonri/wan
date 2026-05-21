@@ -8,6 +8,7 @@ from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.input_validation import InputValidationStage
+from wan.stages.latent_preparation import LatentPreparationStage
 from wan.stages.text_encoding import TextEncodingStage
 from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype, skip_init_modules
 from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
@@ -25,18 +26,20 @@ class WanImageToVideoPipeline(PipelineBase):
     pipeline_config = server_args.pipeline_config
     local_torch_device = get_local_torch_device()
 
-    text_encoder = T5EncoderModel(config=pipeline_config.text_encoder_config)
-    text_encoder.load("models/text_encoders/models_t5_umt5-xxl-enc-bf16.pth", server_args)
-
     tokenizer = AutoTokenizer.from_pretrained("google/umt5-xxl")
+
+    # init text encoder
+    text_encoder_dtype = PRECISION_TO_TYPE[pipeline_config.text_encoder_precision]
+    with set_default_torch_dtype(text_encoder_dtype), skip_init_modules():
+      text_encoder = T5EncoderModel(config=pipeline_config.text_encoder_config)
+      text_encoder.model = text_encoder.model.to(local_torch_device)
+    text_encoder.load("models/text_encoders/models_t5_umt5-xxl-enc-bf16.pth", server_args)
 
     # init vae
     vae_dtype = PRECISION_TO_TYPE[pipeline_config.vae_precision]
-
     with set_default_torch_dtype(vae_dtype), skip_init_modules():
       vae = Wan2_1_VAE(config=pipeline_config.vae_config).to(local_torch_device)
-
-    vae.load(pipeline_config.vae_config.vae_checkpoint, server_args)
+    vae.load("models/vae/wan_2.1_vae.safetensors", server_args)
 
     scheduler = FlowUniPCMultistepScheduler(
       shift=pipeline_config.flow_shift,
@@ -60,3 +63,5 @@ class WanImageToVideoPipeline(PipelineBase):
     )
 
     self.add_stage(ImageVAEEncodingStage(vae=self.get_module("vae")))
+
+    self.add_stage(LatentPreparationStage(scheduler=self.get_module("scheduler")))

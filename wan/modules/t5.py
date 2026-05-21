@@ -249,7 +249,6 @@ class T5EncoderModel:
 
   def load(self, model_path: str, server_args: ServerArgs):
     target_device = get_local_torch_device()
-    self.model.to(target_device)
 
     state_dict = torch.load(model_path, map_location=target_device, weights_only=True)
     self.model.load_state_dict(state_dict, strict=False)

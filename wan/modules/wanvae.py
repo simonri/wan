@@ -3,12 +3,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
-from einops import rearrange
 from safetensors.torch import load_file as safetensors_load_file
 
 from wan.configs.models.vaes.wanvae import WanVAEConfig
-from wan.kernels.rsnorm import rms_norm_triton
-from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 
 CACHE_T = 2
@@ -103,44 +100,18 @@ class CausalConv3d(nn.Conv3d):
 
 
 class RMS_norm(nn.Module):
-  def __init__(self, dim, channel_first=True, images=True, bias=False, eps=1e-6, fused_silu=False):
+  def __init__(self, dim, channel_first=True, images=True, bias=False):
     super().__init__()
-    if fused_silu and bias:
-      raise ValueError(
-        "RMS_norm does not support fused_silu with bias=True (changes order: silu(x*w) + b vs silu(x*w + b))"
-      )
     broadcastable_dims = (1, 1, 1) if not images else (1, 1)
     shape = (dim, *broadcastable_dims) if channel_first else (dim,)
 
     self.channel_first = channel_first
-    self.eps = eps
-    self.fused_silu = fused_silu
+    self.scale = dim**0.5
     self.gamma = nn.Parameter(torch.ones(shape))
-    self.bias = nn.Parameter(torch.zeros(shape)) if bias else None
+    self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.0
 
   def forward(self, x):
-    weight = self.gamma.reshape(-1)
-    bias = self.bias.reshape(-1) if self.bias is not None else None
-
-    if not self.channel_first:
-      x = rms_norm_triton(x, weight, eps=self.eps, silu=self.fused_silu)
-      return x + bias if bias is not None else x
-
-    if x.dim() == 5:
-      x = x.permute(0, 2, 3, 4, 1)
-      x = rms_norm_triton(x, weight, eps=self.eps, silu=self.fused_silu)
-      if bias is not None:
-        x = x + bias
-      return x.permute(0, 4, 1, 2, 3)
-
-    if x.dim() == 4:
-      x = x.permute(0, 2, 3, 1)
-      x = rms_norm_triton(x, weight, eps=self.eps, silu=self.fused_silu)
-      if bias is not None:
-        x = x + bias
-      return x.permute(0, 3, 1, 2)
-
-    raise ValueError(f"RMS_norm expected a 4D or 5D channel-first tensor, got shape {tuple(x.shape)}")
+    return F.normalize(x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma + self.bias
 
 
 def _to_vae_channels_last(model):
@@ -243,13 +214,12 @@ class ResidualBlock(nn.Module):
     self.in_dim = in_dim
     self.out_dim = out_dim
 
-    # layers (SiLU is fused into the preceding RMS_norm; Identity preserves Sequential indices)
     self.residual = nn.Sequential(
-      RMS_norm(in_dim, images=False, fused_silu=True),
-      nn.Identity(),
+      RMS_norm(in_dim, images=False),
+      nn.SiLU(),
       CausalConv3d(in_dim, out_dim, 3, padding=1),
-      RMS_norm(out_dim, images=False, fused_silu=True),
-      nn.Identity(),
+      RMS_norm(out_dim, images=False),
+      nn.SiLU(),
       nn.Dropout(dropout),
       CausalConv3d(out_dim, out_dim, 3, padding=1),
     )
@@ -375,9 +345,8 @@ class WanEncoder3d(nn.Module):
       ResidualBlock(out_dim, out_dim, dropout), AttentionBlock(out_dim), ResidualBlock(out_dim, out_dim, dropout)
     )
 
-    # output blocks (SiLU fused into preceding RMS_norm)
     self.head = nn.Sequential(
-      RMS_norm(out_dim, images=False, fused_silu=True), nn.Identity(), CausalConv3d(out_dim, z_dim, 3, padding=1)
+      RMS_norm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, z_dim, 3, padding=1)
     )
 
   def forward(self, x, feat_cache=None, feat_idx=[0], final=False):
@@ -470,9 +439,8 @@ class Decoder3d(nn.Module):
         scale *= 2.0
     self.upsamples = nn.Sequential(*upsamples)
 
-    # output blocks (SiLU fused into preceding RMS_norm)
     self.head = nn.Sequential(
-      RMS_norm(out_dim, images=False, fused_silu=True), nn.Identity(), CausalConv3d(out_dim, 3, 3, padding=1)
+      RMS_norm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, 3, 3, padding=1)
     )
 
   def forward(self, x, feat_cache=None, feat_idx=[0]):
@@ -567,7 +535,9 @@ class Wan2_1_VAE(nn.Module):
 
   def load(self, model_path: str, server_args: ServerArgs):
     state_dict = safetensors_load_file(model_path)
-    self.load_state_dict(state_dict, strict=False)
+    missing, unexpected = self.load_state_dict(state_dict, strict=False)
+    if missing or unexpected:
+      raise RuntimeError(f"VAE checkpoint mismatch.\n  missing: {missing}\n  unexpected: {unexpected}")
 
   def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
     dtype = next(self.parameters()).dtype

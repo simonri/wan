@@ -15,3 +15,5 @@ class VAEArchConfig(ArchConfig):
 @dataclass
 class VAEConfig(ModelConfig):
   arch_config: VAEArchConfig = field(default_factory=VAEArchConfig)
+
+  use_temporal_scaling_frames: bool = True
