@@ -257,7 +257,6 @@ class DenoisingStage(PipelineStage):
     local_device = get_local_torch_device()
 
     timesteps_cpu = ctx.timesteps.cpu()
-    num_timesteps = timesteps_cpu.shape[0]
 
     with torch.autocast(
       device_type=local_device.type,

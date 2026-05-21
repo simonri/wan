@@ -47,13 +47,22 @@ class WanImageToVideoPipeline(PipelineBase):
       shift=pipeline_config.flow_shift,
     )
 
-    # init transformer
+    # init transformer 1
     transformer_dtype = PRECISION_TO_TYPE[pipeline_config.dit_precision]
     with set_default_torch_dtype(transformer_dtype), skip_init_modules():
       transformer = WanModel(
         config=pipeline_config.dit_config,
       ).to(local_torch_device)
+
     transformer.load("models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors", server_args)
+
+    # init transformer 2
+    with set_default_torch_dtype(transformer_dtype), skip_init_modules():
+      transformer_2 = WanModel(
+        config=pipeline_config.dit_config,
+      ).to(local_torch_device)
+
+    transformer_2.load("models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors", server_args)
 
     return {
       "text_encoder": text_encoder,
@@ -61,7 +70,7 @@ class WanImageToVideoPipeline(PipelineBase):
       "vae": vae,
       "scheduler": scheduler,
       "transformer": transformer,
-      "transformer_2": None,
+      "transformer_2": transformer_2,
     }
 
   def get_module(self, name: str) -> any:
