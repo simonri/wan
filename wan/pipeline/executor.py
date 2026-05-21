@@ -6,6 +6,9 @@ from wan.stages.schedule_batch import Req
 
 
 class BaseExecutor(ABC):
+  def __init__(self, server_args: ServerArgs):
+    self.server_args = server_args
+
   @abstractmethod
   def execute(self, batch: Req) -> Req:
     raise NotImplementedError

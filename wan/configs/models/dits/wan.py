@@ -4,16 +4,60 @@ import torch
 
 from wan.configs.models.dits.base import DiTArchConfig, DiTConfig
 
-_DEFAULT_NEG_PROMPT = (
-  "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，"
-  + "JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，"
-  + "手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-)
-
 
 @dataclass
 class WanArchConfig(DiTArchConfig):
-  """Wan DiT architecture parameters (passed to WanModel.__init__)."""
+  param_names_mapping: dict = field(
+    default_factory=lambda: {
+      "patch_embedding.weight": "patch_embedding.proj.weight",
+      "patch_embedding.bias": "patch_embedding.proj.bias",
+      "text_embedding.0.weight": "condition_embedder.text_embedder.fc_in.weight",
+      "text_embedding.0.bias": "condition_embedder.text_embedder.fc_in.bias",
+      "text_embedding.2.weight": "condition_embedder.text_embedder.fc_out.weight",
+      "text_embedding.2.bias": "condition_embedder.text_embedder.fc_out.bias",
+      "time_embedding.0.weight": "condition_embedder.time_embedder.mlp.fc_in.weight",
+      "time_embedding.0.bias": "condition_embedder.time_embedder.mlp.fc_in.bias",
+      "time_embedding.2.weight": "condition_embedder.time_embedder.mlp.fc_out.weight",
+      "time_embedding.2.bias": "condition_embedder.time_embedder.mlp.fc_out.bias",
+      "time_projection.1.weight": "condition_embedder.time_modulation.linear.weight",
+      "time_projection.1.bias": "condition_embedder.time_modulation.linear.bias",
+      "head.head.weight": "proj_out.weight",
+      "head.head.bias": "proj_out.bias",
+      "head.modulation": "scale_shift_table",
+    }
+  )
+
+  block_param_names_mapping: dict = field(
+    default_factory=lambda: {
+      "self_attn.q.weight": "to_q.weight",
+      "self_attn.q.bias": "to_q.bias",
+      "self_attn.k.weight": "to_k.weight",
+      "self_attn.k.bias": "to_k.bias",
+      "self_attn.v.weight": "to_v.weight",
+      "self_attn.v.bias": "to_v.bias",
+      "self_attn.o.weight": "to_out.weight",
+      "self_attn.o.bias": "to_out.bias",
+      "self_attn.norm_q.weight": "norm_q.weight",
+      "self_attn.norm_k.weight": "norm_k.weight",
+      "modulation": "scale_shift_table",
+      "ffn.0.weight": "ffn.fc_in.weight",
+      "ffn.0.bias": "ffn.fc_in.bias",
+      "ffn.2.weight": "ffn.fc_out.weight",
+      "ffn.2.bias": "ffn.fc_out.bias",
+      "norm3.weight": "self_attn_residual_norm.norm.weight",
+      "norm3.bias": "self_attn_residual_norm.norm.bias",
+      "cross_attn.q.weight": "attn2.to_q.weight",
+      "cross_attn.q.bias": "attn2.to_q.bias",
+      "cross_attn.k.weight": "attn2.to_k.weight",
+      "cross_attn.k.bias": "attn2.to_k.bias",
+      "cross_attn.v.weight": "attn2.to_v.weight",
+      "cross_attn.v.bias": "attn2.to_v.bias",
+      "cross_attn.o.weight": "attn2.to_out.weight",
+      "cross_attn.o.bias": "attn2.to_out.bias",
+      "cross_attn.norm_q.weight": "attn2.norm_q.weight",
+      "cross_attn.norm_k.weight": "attn2.norm_k.weight",
+    }
+  )
 
   patch_size: tuple[int, int, int] = (1, 2, 2)
   num_attention_heads: int = 40
@@ -22,6 +66,8 @@ class WanArchConfig(DiTArchConfig):
   eps: float = 1e-6
   qk_norm: str = "rms_norm_across_heads"
 
+  attention_head_dim: int = 128
+
   in_dim: int = 36  # 16 noise + 4 mask + 16 encoded-image conditioning
   num_channels_latents: int = 16  # VAE latent channels (== WanModel.out_dim)
   text_dim: int = 4096
@@ -29,6 +75,9 @@ class WanArchConfig(DiTArchConfig):
   ffn_dim: int = 13824
   param_dtype: torch.dtype = torch.bfloat16
   boundary_ratio: float = 0.5
+
+  def __post_init__(self):
+    self.hidden_size = self.num_attention_heads * self.attention_head_dim
 
 
 @dataclass

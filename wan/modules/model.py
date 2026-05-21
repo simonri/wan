@@ -1,11 +1,12 @@
-# Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import math
 
 import torch
 import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin
 from diffusers.models.modeling_utils import ModelMixin
+from safetensors.torch import load_file as safetensors_load_file
 
+from wan.configs.models.dits.wan import WanConfig
 from wan.layers.attention.layer import USPAttention
 from wan.layers.elementwise import MulAdd
 from wan.layers.layernorm import LayerNormScaleShift, RMSNorm, ScaleResidualLayerNormScaleShift
@@ -13,6 +14,8 @@ from wan.layers.mlp import MLP
 from wan.layers.mrope import NDRotaryEmbedding
 from wan.layers.rotary_embedding.utils import apply_flashinfer_rope_qk_inplace
 from wan.layers.visual_embedding import ModulateProjection, PatchEmbed, TimestepEmbedder
+from wan.platform import CudaPlatform
+from wan.server_args import ServerArgs
 
 __all__ = ['WanModel']
 
@@ -179,39 +182,49 @@ class WanModel(ModelMixin, ConfigMixin):
 
   def __init__(
     self,
-    patch_size=(1, 2, 2),
-    in_dim=16,
-    dim=2048,
-    ffn_dim=8192,
-    freq_dim=256,
-    text_dim=4096,
-    out_dim=16,
-    num_heads=16,
-    num_layers=32,
-    qk_norm: str = "rms_norm_across_heads",
-    eps=1e-6,
+    config: WanConfig,
   ):
     super().__init__()
 
-    self.patch_size = patch_size
+    self.patch_size = config.arch_config.patch_size
+
+    inner_dim = config.arch_config.num_attention_heads * config.arch_config.attention_head_dim
+    self.hidden_size = config.arch_config.hidden_size
 
     # since kernel_size = patch_size = stride, we can use PatchEmbed instead of nn.Conv3d
-    self.patch_embedding = PatchEmbed(in_chans=in_dim, embed_dim=dim, patch_size=patch_size, flatten=False)
+    self.patch_embedding = PatchEmbed(
+      in_chans=config.arch_config.in_dim,
+      embed_dim=inner_dim,
+      patch_size=config.arch_config.patch_size,
+      flatten=False,
+    )
 
-    self.condition_embedder = WanTimeTextImageEmbedding(dim=dim, time_freq_dim=freq_dim, text_embed_dim=text_dim)
+    self.condition_embedder = WanTimeTextImageEmbedding(
+      dim=inner_dim, time_freq_dim=config.arch_config.freq_dim, text_embed_dim=config.arch_config.text_dim
+    )
 
     self.blocks = nn.ModuleList(
       [
-        WanTransformerBlock(dim=dim, ffn_dim=ffn_dim, num_heads=num_heads, qk_norm=qk_norm, eps=eps)
-        for _ in range(num_layers)
+        WanTransformerBlock(
+          dim=inner_dim,
+          ffn_dim=config.arch_config.ffn_dim,
+          num_heads=config.arch_config.num_attention_heads,
+          qk_norm=config.arch_config.qk_norm,
+          eps=config.arch_config.eps,
+        )
+        for _ in range(config.arch_config.num_layers)
       ]
     )
 
-    self.norm_out = LayerNormScaleShift(dim, eps=eps, elementwise_affine=False, dtype=torch.float32)
-    self.proj_out = nn.Linear(dim, out_dim * math.prod(self.patch_size), bias=True)
-    self.scale_shift_table = nn.Parameter(torch.randn(1, 2, dim) / dim**0.5)
+    self.norm_out = LayerNormScaleShift(
+      inner_dim, eps=config.arch_config.eps, elementwise_affine=False, dtype=torch.float32
+    )
+    self.proj_out = nn.Linear(
+      inner_dim, config.arch_config.num_channels_latents * math.prod(self.patch_size), bias=True
+    )
+    self.scale_shift_table = nn.Parameter(torch.randn(1, 2, inner_dim) / inner_dim**0.5)
 
-    d = dim // num_heads
+    d = self.hidden_size // config.arch_config.num_attention_heads
     rope_dim_list = [d - 4 * (d // 6), 2 * (d // 6), 2 * (d // 6)]
     self.rotary_emb = NDRotaryEmbedding(rope_dim_list=rope_dim_list, rope_theta=10000, dtype=torch.float64)
 
@@ -291,3 +304,21 @@ class WanModel(ModelMixin, ConfigMixin):
     output = hidden_states.flatten(6, 7).flatten(4, 5).flatten(2, 3)
 
     return output
+
+  def load(self, model_path: str, server_args: ServerArgs):
+    gpu_mem_before_loading = CudaPlatform.get_available_gpu_memory()
+    print(f"Loading Transformer from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
+    state_dict = safetensors_load_file(model_path)
+
+    arch = server_args.pipeline_config.dit_config.arch_config
+    for old_key, new_key in arch.param_names_mapping.items():
+      if old_key in state_dict:
+        state_dict[new_key] = state_dict.pop(old_key)
+
+    for i in range(arch.num_layers):
+      for old_suffix, new_suffix in arch.block_param_names_mapping.items():
+        old_key = f"blocks.{i}.{old_suffix}"
+        if old_key in state_dict:
+          state_dict[f"blocks.{i}.{new_suffix}"] = state_dict.pop(old_key)
+
+    self.load_state_dict(state_dict, strict=True)

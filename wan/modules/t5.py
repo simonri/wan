@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from wan.configs.models.encoders.t5 import T5Config
-from wan.platform import get_local_torch_device
+from wan.platform import CudaPlatform, get_local_torch_device
 from wan.server_args import ServerArgs
 
 
@@ -234,7 +234,8 @@ class T5Encoder(nn.Module):
     return x
 
   def load(self, model_path: str, server_args: ServerArgs):
-    print(f"Loading T5 encoder from {model_path}")
+    gpu_mem_before_loading = CudaPlatform.get_available_gpu_memory()
+    print(f"Loading T5 encoder from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
     target_device = get_local_torch_device()
     state_dict = torch.load(model_path, map_location=target_device, weights_only=True)
     self.load_state_dict(state_dict, strict=False)

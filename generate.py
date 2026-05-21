@@ -33,7 +33,7 @@ def generate(args):
   server_args = ServerArgs(pipeline_config=cfg)
 
   logging.info("Creating WanI2V pipeline.")
-  executor = SyncExecutor()
+  executor = SyncExecutor(server_args=server_args)
 
   wan_i2v = WanImageToVideoPipeline(
     server_args=server_args,

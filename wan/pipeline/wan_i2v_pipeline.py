@@ -1,11 +1,13 @@
 from transformers import AutoTokenizer
 
+from wan.modules.model import WanModel
 from wan.modules.t5 import T5Encoder
 from wan.modules.wanvae import Wan2_1_VAE
 from wan.pipeline.base import PipelineBase
 from wan.pipeline.executor import BaseExecutor
 from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
+from wan.stages.denoising import DenoisingStage
 from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.input_validation import InputValidationStage
 from wan.stages.latent_preparation import LatentPreparationStage
@@ -45,11 +47,21 @@ class WanImageToVideoPipeline(PipelineBase):
       shift=pipeline_config.flow_shift,
     )
 
+    # init transformer
+    transformer_dtype = PRECISION_TO_TYPE[pipeline_config.dit_precision]
+    with set_default_torch_dtype(transformer_dtype), skip_init_modules():
+      transformer = WanModel(
+        config=pipeline_config.dit_config,
+      ).to(local_torch_device)
+    transformer.load("models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors", server_args)
+
     return {
       "text_encoder": text_encoder,
       "tokenizer": tokenizer,
       "vae": vae,
       "scheduler": scheduler,
+      "transformer": transformer,
+      "transformer_2": None,
     }
 
   def get_module(self, name: str) -> any:
@@ -67,3 +79,13 @@ class WanImageToVideoPipeline(PipelineBase):
     self.add_stage(LatentPreparationStage(scheduler=self.get_module("scheduler")))
 
     self.add_stage(TimestepPreparationStage(scheduler=self.get_module("scheduler")))
+
+    self.add_stage(
+      DenoisingStage(
+        transformer=self.get_module("transformer"),
+        transformer_2=self.get_module("transformer_2"),
+        scheduler=self.get_module("scheduler"),
+        pipeline=self,
+        vae=self.get_module("vae"),
+      )
+    )

@@ -6,6 +6,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from safetensors.torch import load_file as safetensors_load_file
 
 from wan.configs.models.vaes.wanvae import WanVAEConfig
+from wan.platform import CudaPlatform
 from wan.server_args import ServerArgs
 
 CACHE_T = 2
@@ -530,11 +531,10 @@ class Wan2_1_VAE(nn.Module):
     _to_vae_channels_last(self)
 
   def load(self, model_path: str, server_args: ServerArgs):
-    print(f"Loading VAE from {model_path}")
+    gpu_mem_before_loading = CudaPlatform.get_available_gpu_memory()
+    print(f"Loading VAE from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
     state_dict = safetensors_load_file(model_path)
-    missing, unexpected = self.load_state_dict(state_dict, strict=False)
-    if missing or unexpected:
-      raise RuntimeError(f"VAE checkpoint mismatch.\n  missing: {missing}\n  unexpected: {unexpected}")
+    self.load_state_dict(state_dict, strict=True)
 
   def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
     dtype = next(self.parameters()).dtype
