@@ -10,6 +10,7 @@ from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.input_validation import InputValidationStage
 from wan.stages.latent_preparation import LatentPreparationStage
 from wan.stages.text_encoding import TextEncodingStage
+from wan.stages.timestep_preparation import TimestepPreparationStage
 from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype, skip_init_modules
 from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
@@ -64,3 +65,5 @@ class WanImageToVideoPipeline(PipelineBase):
     self.add_stage(ImageVAEEncodingStage(vae=self.get_module("vae")))
 
     self.add_stage(LatentPreparationStage(scheduler=self.get_module("scheduler")))
+
+    self.add_stage(TimestepPreparationStage(scheduler=self.get_module("scheduler")))

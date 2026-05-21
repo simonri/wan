@@ -35,6 +35,13 @@ class Req:
   # additional text-related parameters
   do_classifier_free_guidance: bool = False
 
+  # timesteps
+  timesteps: torch.Tensor | None = None
+
+  scheduler: Any | None = None
+
+  sigmas: list[float] | None = None
+
   # latent tensors
   latents: torch.Tensor | None = None
 
