@@ -203,24 +203,25 @@ class T5RelativeEmbedding(nn.Module):
 
 
 class T5Encoder(nn.Module):
-  def __init__(self, vocab, dim, dim_attn, dim_ffn, num_heads, num_layers, num_buckets, shared_pos=True, dropout=0.1):
+  def __init__(self, config: T5Config):
     super().__init__()
-    self.dim = dim
-    self.dim_attn = dim_attn
-    self.dim_ffn = dim_ffn
-    self.num_heads = num_heads
-    self.num_layers = num_layers
-    self.num_buckets = num_buckets
-    self.shared_pos = shared_pos
+    arch = config.arch_config
+    self.shared_pos = arch.shared_pos
 
-    # layers
-    self.token_embedding = vocab if isinstance(vocab, nn.Embedding) else nn.Embedding(vocab, dim)
-    self.pos_embedding = T5RelativeEmbedding(num_buckets, num_heads, bidirectional=True) if shared_pos else None
-    self.dropout = nn.Dropout(dropout)
-    self.blocks = nn.ModuleList(
-      [T5SelfAttention(dim, dim_attn, dim_ffn, num_heads, num_buckets, shared_pos, dropout) for _ in range(num_layers)]
+    self.token_embedding = nn.Embedding(arch.vocab_size, arch.dim)
+    self.pos_embedding = (
+      T5RelativeEmbedding(arch.num_buckets, arch.num_heads, bidirectional=True) if arch.shared_pos else None
     )
-    self.norm = T5LayerNorm(dim)
+    self.dropout = nn.Dropout(arch.dropout)
+    self.blocks = nn.ModuleList(
+      [
+        T5SelfAttention(
+          arch.dim, arch.dim_attn, arch.dim_ffn, arch.num_heads, arch.num_buckets, arch.shared_pos, arch.dropout
+        )
+        for _ in range(arch.num_layers)
+      ]
+    )
+    self.norm = T5LayerNorm(arch.dim)
 
   def forward(self, ids, mask=None):
     x = self.token_embedding(ids)
@@ -232,23 +233,8 @@ class T5Encoder(nn.Module):
     x = self.dropout(x)
     return x
 
-
-class T5EncoderModel:
-  def __init__(self, config: T5Config):
-    self.model = T5Encoder(
-      vocab=config.arch_config.vocab_size,
-      dim=config.arch_config.dim,
-      dim_attn=config.arch_config.dim_attn,
-      dim_ffn=config.arch_config.dim_ffn,
-      num_heads=config.arch_config.num_heads,
-      num_layers=config.arch_config.num_layers,
-      num_buckets=config.arch_config.num_buckets,
-      shared_pos=config.arch_config.shared_pos,
-      dropout=config.arch_config.dropout,
-    )
-
   def load(self, model_path: str, server_args: ServerArgs):
+    print(f"Loading T5 encoder from {model_path}")
     target_device = get_local_torch_device()
-
     state_dict = torch.load(model_path, map_location=target_device, weights_only=True)
-    self.model.load_state_dict(state_dict, strict=False)
+    self.load_state_dict(state_dict, strict=False)

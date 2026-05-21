@@ -6,7 +6,7 @@ from transformers import AutoTokenizer
 
 from wan.bench.nvtx_marker import NVTXMarker, cuda_profiler_start, cuda_profiler_stop
 from wan.configs.pipeline.wan import WanI2VConfig
-from wan.modules.t5 import T5EncoderModel
+from wan.modules.t5 import T5Encoder
 from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.schedule_batch import Req
@@ -69,7 +69,7 @@ def benchmark(stage, prompt, server_args, device, run_count=10):
 def profile_nsys(stage, prompt, server_args, device):
   warmup(stage, prompt, server_args, device, run_count=2)
   cuda_profiler_start()
-  with NVTXMarker(stage.text_encoder.model):
+  with NVTXMarker(stage.text_encoder):
     torch.cuda.nvtx.range_push("t5_encode")
     _ = encode_once(stage, prompt, server_args, device)
     torch.cuda.synchronize()
@@ -96,7 +96,7 @@ def main():
 
   tokenizer = AutoTokenizer.from_pretrained("google/umt5-xxl")
 
-  text_encoder = T5EncoderModel(config=pipeline_config.text_encoder_config)
+  text_encoder = T5Encoder(config=pipeline_config.text_encoder_config)
   text_encoder.load(CHECKPOINT_PATH, server_args)
 
   text_encoding_stage = TextEncodingStage(text_encoder=text_encoder, tokenizer=tokenizer)

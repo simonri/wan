@@ -1,8 +1,15 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class SamplingParams:
+  prompt: str | list[str] = field(default=None)
+
+  # batch info
+  num_outputs_per_prompt: int = 1
+  seed: int = field(default=42)
+  generator_device: str | None = None
+
   height: int | None = None
   width: int | None = None
   fps: int = 16

@@ -13,6 +13,7 @@ from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.decoding import DecodingStage
 from wan.stages.image_encoding import ImageVAEEncodingStage
+from wan.stages.input_validation import InputValidationStage
 from wan.stages.schedule_batch import Req
 from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype, skip_init_modules
 
@@ -61,26 +62,29 @@ def parse_args():
 
 
 def make_batch():
-  image = PIL.Image.open(IMAGE_PATH).convert("RGB").resize(IMAGE_SIZE)
   sampling_params = Wan2_2_I2V_SamplingParam(height=IMAGE_SIZE[1], width=IMAGE_SIZE[0], num_frames=FRAME_NUM)
-  return Req(sampling_params=sampling_params, condition_image=image)
+  batch = Req(sampling_params=sampling_params)
+  batch.image_path = IMAGE_PATH
+  batch.prompt = ""
+  return batch
 
 
-def encode_once(stage, server_args):
+def encode_once(input_validation_stage, image_encoding_stage, server_args):
   batch = make_batch()
   with torch.inference_mode():
-    stage(batch, server_args)
+    input_validation_stage(batch, server_args)
+    image_encoding_stage(batch, server_args)
   return batch.image_latent
 
 
-def warmup(stage, server_args, run_count=3):
+def warmup(input_validation_stage, image_encoding_stage, server_args, run_count=3):
   for _ in range(run_count):
-    _ = encode_once(stage, server_args)
+    _ = encode_once(input_validation_stage, image_encoding_stage, server_args)
   torch.cuda.synchronize()
 
 
-def compare_encoded(stage, decoding_stage, server_args, device):
-  y = encode_once(stage, server_args)
+def compare_encoded(input_validation_stage, image_encoding_stage, decoding_stage, server_args, device):
+  y = encode_once(input_validation_stage, image_encoding_stage, server_args)
   orig = torch.load(ENCODED_PATH, map_location=device)
   print(orig.shape)
 
@@ -95,22 +99,27 @@ def compare_encoded(stage, decoding_stage, server_args, device):
   first_frame = decoded[0, :, 0].clamp(0, 1).cpu()
   PIL.Image.fromarray((first_frame.permute(1, 2, 0) * 255).to(torch.uint8).numpy()).save("decoded.png")
 
-  if torch.allclose(orig, y_latent.squeeze(0)):
+  y_latent_squeezed = y_latent.squeeze(0)
+  if y_latent_squeezed.shape != orig.shape:
+    print(f"Shape mismatch: orig {tuple(orig.shape)} vs {tuple(y_latent_squeezed.shape)}; regenerate encoded.pt.")
+    return
+
+  if torch.allclose(orig, y_latent_squeezed):
     print("Original and encoded video are the same")
     return
 
-  max_diff = (orig - y_latent.squeeze(0)).abs().max().item()
+  max_diff = (orig - y_latent_squeezed).abs().max().item()
   print(f"Original and encoded video are different; max abs diff: {max_diff:.8f}")
 
 
-def benchmark(stage, server_args):
+def benchmark(input_validation_stage, image_encoding_stage, server_args):
   times = []
   run_count = 10
   for _ in range(run_count):
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
-    _ = encode_once(stage, server_args)
+    _ = encode_once(input_validation_stage, image_encoding_stage, server_args)
     end.record()
     torch.cuda.synchronize()
     times.append(start.elapsed_time(end) / 1000)
@@ -122,22 +131,22 @@ def benchmark(stage, server_args):
   print(f"Std:    {statistics.pstdev(times):.6f} sec")
 
 
-def profile_nsys(stage, server_args, vae):
-  warmup(stage, server_args, run_count=2)
+def profile_nsys(input_validation_stage, image_encoding_stage, server_args, vae):
+  warmup(input_validation_stage, image_encoding_stage, server_args, run_count=2)
   cuda_profiler_start()
   with NVTXMarker(vae.model):
     torch.cuda.nvtx.range_push("encode")
-    _ = encode_once(stage, server_args)
+    _ = encode_once(input_validation_stage, image_encoding_stage, server_args)
     torch.cuda.synchronize()
     torch.cuda.nvtx.range_pop()
   cuda_profiler_stop()
 
 
-def profile_layers(stage, server_args, vae, limit, name_filter, include_parents):
-  warmup(stage, server_args, run_count=1)
+def profile_layers(input_validation_stage, image_encoding_stage, server_args, vae, limit, name_filter, include_parents):
+  warmup(input_validation_stage, image_encoding_stage, server_args, run_count=1)
 
   with LayerTimer(vae.model, name_filter=name_filter, include_parents=include_parents) as timer:
-    _ = encode_once(stage, server_args)
+    _ = encode_once(input_validation_stage, image_encoding_stage, server_args)
 
   if include_parents:
     print("Note: parent module timings include child module time.")
@@ -163,20 +172,27 @@ def main():
   vae.load(VAE_PATH, server_args)
 
   # stages
+  input_validation_stage = InputValidationStage()
   image_encoding_stage = ImageVAEEncodingStage(vae=vae)
   decoding_stage = DecodingStage(vae=vae)
 
   if args.nsys:
-    profile_nsys(image_encoding_stage, server_args, vae)
+    profile_nsys(input_validation_stage, image_encoding_stage, server_args, vae)
   elif args.profile_layers:
     profile_layers(
-      image_encoding_stage, server_args, vae, args.profile_limit, args.profile_filter, args.profile_parents
+      input_validation_stage,
+      image_encoding_stage,
+      server_args,
+      vae,
+      args.profile_limit,
+      args.profile_filter,
+      args.profile_parents,
     )
   elif args.benchmark:
-    warmup(image_encoding_stage, server_args)
-    benchmark(image_encoding_stage, server_args)
+    warmup(input_validation_stage, image_encoding_stage, server_args)
+    benchmark(input_validation_stage, image_encoding_stage, server_args)
   else:
-    compare_encoded(image_encoding_stage, decoding_stage, server_args, local_torch_device)
+    compare_encoded(input_validation_stage, image_encoding_stage, decoding_stage, server_args, local_torch_device)
 
 
 if __name__ == "__main__":

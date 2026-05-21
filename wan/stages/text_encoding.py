@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoTokenizer
 
-from wan.modules.t5 import T5EncoderModel
+from wan.modules.t5 import T5Encoder
 from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
@@ -9,7 +9,7 @@ from wan.stages.schedule_batch import Req
 
 
 class TextEncodingStage(PipelineStage):
-  def __init__(self, text_encoder: T5EncoderModel, tokenizer: AutoTokenizer):
+  def __init__(self, text_encoder: T5Encoder, tokenizer: AutoTokenizer):
     super().__init__()
     self.tokenizer = tokenizer
     self.text_encoder = text_encoder
@@ -72,7 +72,7 @@ class TextEncodingStage(PipelineStage):
     attention_mask = text_inputs.get("attention_mask")
 
     seq_lens = attention_mask.gt(0).sum(dim=1).long()  # [B]
-    context = self.text_encoder.model(input_ids, attention_mask)  # [B, L, D]
+    context = self.text_encoder(input_ids, attention_mask)  # [B, L, D]
 
     embeds_list = [u[:v] for u, v in zip(context, seq_lens, strict=True)]
     attn_masks_list = [m[:v] for m, v in zip(attention_mask, seq_lens, strict=True)]

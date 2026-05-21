@@ -36,14 +36,3 @@ class WanConfig(DiTConfig):
   """Wan I2V A14B full config (DiT arch + text encoder + VAE + sampler defaults)."""
 
   arch_config: WanArchConfig = field(default_factory=WanArchConfig)
-
-  # Text encoder
-  # t5_model: str = 'umt5_xxl'
-  # t5_dtype: torch.dtype = torch.bfloat16
-  # t5_checkpoint: str = 'models/text_encoders/models_t5_umt5-xxl-enc-bf16.pth'
-  # t5_tokenizer: str = 'google/umt5-xxl'  # HuggingFace id, passed to AutoTokenizer
-  # text_len: int = 512
-
-  # # VAE
-  # vae_checkpoint: str = 'models/vae/wan_2.1_vae.safetensors'
-  # vae_stride: tuple[int, int, int] = (4, 8, 8)

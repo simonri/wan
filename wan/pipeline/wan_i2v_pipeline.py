@@ -1,6 +1,6 @@
 from transformers import AutoTokenizer
 
-from wan.modules.t5 import T5EncoderModel
+from wan.modules.t5 import T5Encoder
 from wan.modules.wanvae import Wan2_1_VAE
 from wan.pipeline.base import PipelineBase
 from wan.pipeline.executor import BaseExecutor
@@ -31,8 +31,7 @@ class WanImageToVideoPipeline(PipelineBase):
     # init text encoder
     text_encoder_dtype = PRECISION_TO_TYPE[pipeline_config.text_encoder_precision]
     with set_default_torch_dtype(text_encoder_dtype), skip_init_modules():
-      text_encoder = T5EncoderModel(config=pipeline_config.text_encoder_config)
-      text_encoder.model = text_encoder.model.to(local_torch_device)
+      text_encoder = T5Encoder(config=pipeline_config.text_encoder_config).to(local_torch_device)
     text_encoder.load("models/text_encoders/models_t5_umt5-xxl-enc-bf16.pth", server_args)
 
     # init vae

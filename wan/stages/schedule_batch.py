@@ -35,6 +35,9 @@ class Req:
   # additional text-related parameters
   do_classifier_free_guidance: bool = False
 
+  # latent tensors
+  latents: torch.Tensor | None = None
+
   def __init__(self, **kwargs):
     for name, value in self.__class__.__dataclass_fields__.items():
       if name in kwargs:
@@ -85,6 +88,18 @@ class Req:
       return
 
     object.__setattr__(self, name, value)
+
+  @property
+  def batch_size(self):
+    if isinstance(self.prompt, list):
+      batch_size = len(self.prompt)
+    elif self.prompt is not None:
+      batch_size = 1
+    else:
+      batch_size = self.prompt_embeds[0].shape[0]
+
+    batch_size *= self.num_outputs_per_prompt
+    return batch_size
 
 
 @dataclass

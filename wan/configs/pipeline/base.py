@@ -13,6 +13,9 @@ class PipelineConfig:
   # generation params
   flow_shift: float | None = None
 
+  # generation parameters
+  generator_device: str | None = None
+
   # model configuration
   dit_config: DiTConfig = field(default_factory=DiTConfig)
   dit_precision: str = "bf16"
@@ -68,3 +71,17 @@ class PipelineConfig:
     mask_lat_size = mask_lat_size.to(latent_condition.device)
     image_latents = torch.concat([latent_condition, mask_lat_size], dim=1)
     return image_latents
+
+  def prepare_latent_shape(self, batch, batch_size, num_frames):
+    height = batch.height // self.vae_config.arch_config.spatial_compression_ratio
+    width = batch.width // self.vae_config.arch_config.spatial_compression_ratio
+
+    shape = (
+      batch_size,
+      self.dit_config.num_channels_latents,
+      num_frames,
+      height,
+      width,
+    )
+
+    return shape

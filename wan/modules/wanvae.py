@@ -345,9 +345,7 @@ class WanEncoder3d(nn.Module):
       ResidualBlock(out_dim, out_dim, dropout), AttentionBlock(out_dim), ResidualBlock(out_dim, out_dim, dropout)
     )
 
-    self.head = nn.Sequential(
-      RMS_norm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, z_dim, 3, padding=1)
-    )
+    self.head = nn.Sequential(RMS_norm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, z_dim, 3, padding=1))
 
   def forward(self, x, feat_cache=None, feat_idx=[0], final=False):
     if feat_cache is not None:
@@ -439,9 +437,7 @@ class Decoder3d(nn.Module):
         scale *= 2.0
     self.upsamples = nn.Sequential(*upsamples)
 
-    self.head = nn.Sequential(
-      RMS_norm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, 3, 3, padding=1)
-    )
+    self.head = nn.Sequential(RMS_norm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, 3, 3, padding=1))
 
   def forward(self, x, feat_cache=None, feat_idx=[0]):
     # conv1
@@ -534,6 +530,7 @@ class Wan2_1_VAE(nn.Module):
     _to_vae_channels_last(self)
 
   def load(self, model_path: str, server_args: ServerArgs):
+    print(f"Loading VAE from {model_path}")
     state_dict = safetensors_load_file(model_path)
     missing, unexpected = self.load_state_dict(state_dict, strict=False)
     if missing or unexpected:

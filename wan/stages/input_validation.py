@@ -1,6 +1,8 @@
 import numpy as np
 import PIL.Image
+import torch
 
+from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
@@ -17,6 +19,28 @@ def load_image(
 class InputValidationStage(PipelineStage):
   def __init__(self):
     super().__init__()
+
+  def _generate_seeds(self, batch: Req, server_args: ServerArgs):
+    seed = batch.seed
+    num_videos_per_prompt = batch.num_outputs_per_prompt
+
+    assert seed is not None
+
+    prompt_count = len(batch.prompt) if isinstance(batch.prompt, list) else 1
+
+    # todo: support list of seeds?
+    base_seeds = [int(seed) + 1 * num_videos_per_prompt * i for i in range(prompt_count)]
+    seeds = []
+    for base_seed in base_seeds:
+      seeds.extend([base_seed + i for i in range(num_videos_per_prompt)])
+
+    batch.seeds = seeds
+
+    generator_device = batch.generator_device
+    if generator_device is None:
+      generator_device = getattr(server_args.pipeline_config, "generator_device", None) or get_local_torch_device().type
+
+    batch.generator = [torch.Generator(device=generator_device).manual_seed(seed) for seed in seeds]
 
   @staticmethod
   def _calculate_dimensions_from_area(max_area: float, aspect_ratio: float, mod_value: int) -> tuple[int, int]:
@@ -57,6 +81,8 @@ class InputValidationStage(PipelineStage):
     batch.width = width
 
   def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+    self._generate_seeds(batch, server_args)
+
     # ensure prompt is properly formatted
     if batch.prompt is None and batch.prompt_embeds is None:
       raise ValueError("Either prompt or prompt_embeds must be provided")
