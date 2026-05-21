@@ -302,14 +302,12 @@ class AttentionBlock(nn.Module):
     self.to_qkv = nn.Conv2d(dim, dim * 3, 1)
     self.proj = nn.Conv2d(dim, dim, 1)
 
-    # zero out the last layer params
-    nn.init.zeros_(self.proj.weight)
-
   def forward(self, x):
     identity = x
     b, c, t, h, w = x.size()
-    x = rearrange(x, 'b c t h w -> (b t) c h w')
+    x = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
     x = self.norm(x)
+
     # compute query, key, value
     q, k, v = self.to_qkv(x).reshape(b * t, 1, c * 3, -1).permute(0, 1, 3, 2).contiguous().chunk(3, dim=-1)
 
@@ -323,7 +321,8 @@ class AttentionBlock(nn.Module):
 
     # output
     x = self.proj(x)
-    x = rearrange(x, '(b t) c h w-> b c t h w', t=t)
+    x = x.view(b, t, c, h, w)
+    x = x.permute(0, 2, 1, 3, 4)
     return x + identity
 
 
