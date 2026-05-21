@@ -327,7 +327,7 @@ class AttentionBlock(nn.Module):
     return x + identity
 
 
-class Encoder3d(nn.Module):
+class WanEncoder3d(nn.Module):
   def __init__(
     self,
     dim=128,
@@ -355,21 +355,21 @@ class Encoder3d(nn.Module):
     self.conv1 = CausalConv3d(3, dims[0], 3, padding=1)
 
     # downsample blocks
-    downsamples = []
-    for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
+    self.downsamples = nn.ModuleList([])
+
+    for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:], strict=True)):
       # residual (+attention) blocks
       for _ in range(num_res_blocks):
-        downsamples.append(ResidualBlock(in_dim, out_dim, dropout))
+        self.downsamples.append(ResidualBlock(in_dim, out_dim, dropout))
         if scale in attn_scales:
-          downsamples.append(AttentionBlock(out_dim))
+          self.downsamples.append(AttentionBlock(out_dim))
         in_dim = out_dim
 
       # downsample block
       if i != len(dim_mult) - 1:
-        mode = 'downsample3d' if temperal_downsample[i] else 'downsample2d'
-        downsamples.append(Resample(out_dim, mode=mode))
+        mode = "downsample3d" if temperal_downsample[i] else "downsample2d"
+        self.downsamples.append(Resample(out_dim, mode=mode))
         scale /= 2.0
-    self.downsamples = nn.Sequential(*downsamples)
 
     # middle blocks
     self.middle = nn.Sequential(
@@ -543,7 +543,7 @@ class Wan2_1_VAE(nn.Module):
     self.latents_mean = list(config.latents_mean)
     self.latents_std = list(config.latents_std)
 
-    self.encoder = Encoder3d(
+    self.encoder = WanEncoder3d(
       config.base_dim,
       self.z_dim * 2,
       config.dim_mult,
@@ -567,9 +567,6 @@ class Wan2_1_VAE(nn.Module):
     _to_vae_channels_last(self)
 
   def load(self, model_path: str, server_args: ServerArgs):
-    target_device = get_local_torch_device()
-    self.to(target_device)
-
     state_dict = safetensors_load_file(model_path)
     self.load_state_dict(state_dict, strict=False)
 

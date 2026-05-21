@@ -4,10 +4,12 @@ from wan.modules.t5 import T5EncoderModel
 from wan.modules.wanvae import Wan2_1_VAE
 from wan.pipeline.base import PipelineBase
 from wan.pipeline.executor import BaseExecutor
+from wan.platform import get_local_torch_device
 from wan.server_args import ServerArgs
 from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.input_validation import InputValidationStage
 from wan.stages.text_encoding import TextEncodingStage
+from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype, skip_init_modules
 from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 
@@ -21,13 +23,19 @@ class WanImageToVideoPipeline(PipelineBase):
 
   def load_modules(self, server_args: ServerArgs) -> dict[str, any]:
     pipeline_config = server_args.pipeline_config
+    local_torch_device = get_local_torch_device()
 
     text_encoder = T5EncoderModel(config=pipeline_config.text_encoder_config)
     text_encoder.load("models/text_encoders/models_t5_umt5-xxl-enc-bf16.pth", server_args)
 
     tokenizer = AutoTokenizer.from_pretrained("google/umt5-xxl")
 
-    vae = Wan2_1_VAE(config=pipeline_config.vae_config)
+    # init vae
+    vae_dtype = PRECISION_TO_TYPE[pipeline_config.vae_precision]
+
+    with set_default_torch_dtype(vae_dtype), skip_init_modules():
+      vae = Wan2_1_VAE(config=pipeline_config.vae_config).to(local_torch_device)
+
     vae.load(pipeline_config.vae_config.vae_checkpoint, server_args)
 
     scheduler = FlowUniPCMultistepScheduler(

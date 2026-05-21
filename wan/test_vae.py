@@ -14,6 +14,7 @@ from wan.server_args import ServerArgs
 from wan.stages.decoding import DecodingStage
 from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.schedule_batch import Req
+from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype, skip_init_modules
 
 VAE_PATH = "models/vae/wan_2.1_vae.safetensors"
 IMAGE_PATH = "examples/i2v_input.JPG"
@@ -151,14 +152,19 @@ def main():
   local_torch_device = get_local_torch_device()
 
   pipeline_config = WanI2VConfig()
-
-  vae = Wan2_1_VAE(config=pipeline_config.vae_config)
-
   server_args = ServerArgs(pipeline_config=pipeline_config)
-  image_encoding_stage = ImageVAEEncodingStage(vae=vae)
-  decoding_stage = DecodingStage(vae=vae)
+
+  # init vae
+  vae_dtype = PRECISION_TO_TYPE[pipeline_config.vae_precision]
+
+  with set_default_torch_dtype(vae_dtype), skip_init_modules():
+    vae = Wan2_1_VAE(config=pipeline_config.vae_config).to(local_torch_device)
 
   vae.load(VAE_PATH, server_args)
+
+  # stages
+  image_encoding_stage = ImageVAEEncodingStage(vae=vae)
+  decoding_stage = DecodingStage(vae=vae)
 
   if args.nsys:
     profile_nsys(image_encoding_stage, server_args, vae)
@@ -175,3 +181,9 @@ def main():
 
 if __name__ == "__main__":
   main()
+
+
+# Min:    2.414933 sec
+# Median: 2.608717 sec
+# Mean:   2.600217 sec
+# Std:    0.104471 sec
