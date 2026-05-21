@@ -36,8 +36,8 @@ def save_context(context, save_path):
 
 def encode_once(stage, prompt, server_args, device):
   with torch.inference_mode():
-    embeds_list, *_ = stage.encode_text(prompt, server_args, device)
-    return embeds_list[0]
+    embeds = stage.encode_text(prompt, server_args, device)
+    return embeds[0]
 
 
 def warmup(stage, prompt, server_args, device, run_count=3):

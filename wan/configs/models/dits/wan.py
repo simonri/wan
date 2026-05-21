@@ -73,8 +73,9 @@ class WanArchConfig(DiTArchConfig):
   text_dim: int = 4096
   hidden_size: int = 5120
   ffn_dim: int = 13824
-  param_dtype: torch.dtype = torch.bfloat16
-  boundary_ratio: float = 0.5
+
+  # wan moe
+  boundary_ratio: float | None = None
 
   def __post_init__(self):
     self.hidden_size = self.num_attention_heads * self.attention_head_dim

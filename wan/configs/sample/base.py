@@ -18,3 +18,4 @@ class SamplingParams:
   num_inference_steps: int = None
   guidance_scale: float = 1.0
   guidance_scale_2: float = None
+  boundary_ratio: float | None = None

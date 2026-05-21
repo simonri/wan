@@ -9,6 +9,15 @@ from wan.stages.schedule_batch import Req
 
 
 @dataclass
+class BaseEncoderOutput:
+  last_hidden_state: torch.FloatTensor | None = None
+  pooler_output: torch.FloatTensor | None = None
+  hidden_states: tuple[torch.FloatTensor, ...] | None = None
+  attentions: tuple[torch.FloatTensor, ...] | None = None
+  attention_masks: torch.Tensor | None = None
+
+
+@dataclass
 class PipelineConfig:
   # generation params
   flow_shift: float | None = None
@@ -35,6 +44,9 @@ class PipelineConfig:
 
   def tokenize_prompt(self, prompt: list[str], tokenizer, tok_kwargs) -> dict:
     return tokenizer(prompt, **tok_kwargs)
+
+  def postprocess_text(self, outputs: BaseEncoderOutput, text_inputs: dict) -> torch.Tensor:
+    raise NotImplementedError
 
   def get_decode_scale_and_shift(self, device, dtype, vae):
     vae_arch_config = self.vae_config.arch_config

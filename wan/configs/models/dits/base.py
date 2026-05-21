@@ -4,9 +4,10 @@ from wan.configs.models.base import ArchConfig, ModelConfig
 
 
 class DiTArchConfig(ArchConfig):
-  hidden_size: int = 0
   num_attention_heads: int = 0
   num_channels_latents: int = 0
+
+  hidden_size: int = 0
   boundary_ratio: float | None = None
 
 

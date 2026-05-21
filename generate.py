@@ -8,7 +8,7 @@ from wan.configs.pipeline.wan import WanI2VConfig
 from wan.configs.sample.wan import Wan2_2_I2V_SamplingParam
 from wan.pipeline.executor import SyncExecutor
 from wan.pipeline.wan_i2v_pipeline import WanImageToVideoPipeline
-from wan.server_args import ServerArgs
+from wan.server_args import ServerArgs, set_global_server_args
 from wan.stages.schedule_batch import Req
 
 
@@ -31,6 +31,7 @@ def generate(args):
 
   cfg = WanI2VConfig()
   server_args = ServerArgs(pipeline_config=cfg)
+  set_global_server_args(server_args)
 
   logging.info("Creating WanI2V pipeline.")
   executor = SyncExecutor(server_args=server_args)

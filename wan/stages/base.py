@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 
-from wan.server_args import ServerArgs
+from wan.server_args import ServerArgs, get_global_server_args
 from wan.stages.schedule_batch import Req
 
 
 class PipelineStage(ABC):
   def __init__(self):
-    pass
+    self.server_args = get_global_server_args()
 
   def __call__(self, batch: Req, server_args: ServerArgs):
     result = self.forward(batch, server_args)
