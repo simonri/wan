@@ -1,4 +1,5 @@
 import math
+import re
 
 import torch
 import torch.nn as nn
@@ -14,6 +15,7 @@ from wan.layers.mlp import MLP
 from wan.layers.mrope import NDRotaryEmbedding
 from wan.layers.rotary_embedding.utils import apply_flashinfer_rope_qk_inplace
 from wan.layers.visual_embedding import ModulateProjection, PatchEmbed, TimestepEmbedder
+from wan.loader.utils import get_param_names_mapping
 from wan.platform import CudaPlatform
 from wan.server_args import ServerArgs
 
@@ -311,15 +313,14 @@ class WanModel(ModelMixin, ConfigMixin):
     state_dict = safetensors_load_file(model_path)
 
     arch = server_args.pipeline_config.dit_config.arch_config
-    for old_key, new_key in arch.param_names_mapping.items():
-      if old_key in state_dict:
-        state_dict[new_key] = state_dict.pop(old_key)
 
-    for i in range(arch.num_layers):
-      for old_suffix, new_suffix in arch.block_param_names_mapping.items():
-        old_key = f"blocks.{i}.{old_suffix}"
-        if old_key in state_dict:
-          state_dict[f"blocks.{i}.{new_suffix}"] = state_dict.pop(old_key)
+    combined_mapping = dict(arch.param_names_mapping)
+    for old_suffix, new_suffix in arch.block_param_names_mapping.items():
+      pattern = rf"(blocks\.\d+\.){re.escape(old_suffix)}"
+      combined_mapping[pattern] = rf"\g<1>{new_suffix}"
+
+    mapping_fn = get_param_names_mapping(combined_mapping)
+    state_dict = {mapping_fn(k)[0]: v for k, v in state_dict.items()}
 
     self.load_state_dict(state_dict, strict=True)
     self.eval().requires_grad_(False)

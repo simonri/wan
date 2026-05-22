@@ -1,3 +1,4 @@
+import os
 from abc import ABC
 
 import torch
@@ -6,6 +7,9 @@ from wan.pipeline.executor import BaseExecutor
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import OutputBatch, Req
+
+# avoid deadlocks when forking
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class PipelineBase(ABC):
