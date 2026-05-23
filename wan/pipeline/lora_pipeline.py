@@ -8,6 +8,7 @@ from safetensors.torch import load_file as safetensors_load_file
 from wan.layers.lora.linear import replace_submodule, wrap_with_lora_layer
 from wan.loader.utils import get_param_names_mapping
 from wan.pipeline.base import PipelineBase
+from wan.pipeline.lora_format_adapter import normalize_lora_state_dict
 from wan.platform import get_local_torch_device
 from wan.server_args import get_global_server_args
 
@@ -78,6 +79,10 @@ class LoRAPipeline(PipelineBase):
 
   def load_lora_adapter(self, lora_path: str, lora_nickname: str):
     raw_state_dict = safetensors_load_file(lora_path)
+    lora_state_dict = normalize_lora_state_dict(raw_state_dict)
+
+    if lora_nickname in self.lora_adapters:
+      self.lora_adapters[lora_nickname].clear()
 
     config = self.server_args.pipeline_config.dit_config.arch_config
 
@@ -85,14 +90,13 @@ class LoRAPipeline(PipelineBase):
     lora_param_names_mapping_fn = get_param_names_mapping(config.lora_param_names_mapping)
 
     to_merge_params: defaultdict[Hashable, dict[Any, Any]] = defaultdict(dict)
-    for name, weight in raw_state_dict.items():
+    for name, weight in lora_state_dict.items():
       name = name.replace("diffusion_model.", "")
       name = name.replace(".weight", "")
 
-      # todo: this will only work for kohya format
-      name = name.replace(".lora_down", ".lora_A").replace(".lora_up", ".lora_B")
-
+      # misc format -> HF-format
       name, _, _ = lora_param_names_mapping_fn(name)
+      # HF format (LoRA) -> dit format
       target_name, merge_index, num_params_to_merge = param_names_mapping_fn(name)
 
       if merge_index is not None:
@@ -132,6 +136,7 @@ class LoRAPipeline(PipelineBase):
       raise ValueError("Number of strengths and lora_paths must be the same!")
 
     adapted_count = 0
+    missing_layers_by_adapter = [[] for _ in lora_nicknames]
     applied_count_by_adapter = [0 for _ in lora_nicknames]
     for name, layer in lora_layers.items():
       # apply all LoRA adapters in order
@@ -161,7 +166,30 @@ class LoRAPipeline(PipelineBase):
           adapted_count += 1
           applied_count_by_adapter[idx] += 1
         else:
-          print(f"LoRA adapter {nickname} not found for {name}")
+          missing_layers_by_adapter[idx].append(name)
+          if idx == len(lora_nicknames) - 1:
+            has_any_lora = any(
+              name + ".lora_A" in self.lora_adapters[n] and name + ".lora_B" in self.lora_adapters[n]
+              for n in lora_nicknames
+            )
+            if not has_any_lora:
+              layer.disable_lora = True
+
+    total_layers = len(lora_layers)
+    example_limit = 8
+    for idx, path in enumerate(lora_paths):
+      missing_layers = missing_layers_by_adapter[idx]
+      if not missing_layers:
+        continue
+      missing_count = len(missing_layers)
+      applied_count = applied_count_by_adapter[idx]
+      examples = ", ".join(missing_layers[:example_limit])
+      if missing_count > example_limit:
+        examples += ", ..."
+      if applied_count == 0:
+        print(f"LoRA adapter {path} did not match any LoRA layer. Examples: {examples}")
+      else:
+        print(f"LoRA adapter {path} covers {applied_count}/{total_layers} layers. Examples: {examples}")
 
     return adapted_count
 

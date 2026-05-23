@@ -3,6 +3,8 @@ import torch.nn as nn
 
 from wan.platform import get_local_torch_device
 
+torch._dynamo.config.recompile_limit = 64
+
 LORA_MERGE_CHUNK_BYTES = 32 * 1024 * 1024
 LoRAWeightEntry = tuple[
   torch.nn.Parameter,
