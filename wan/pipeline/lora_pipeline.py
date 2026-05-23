@@ -1,5 +1,4 @@
 from collections import defaultdict
-from collections.abc import Hashable
 from typing import Any
 
 import torch
@@ -85,32 +84,14 @@ class LoRAPipeline(PipelineBase):
       self.lora_adapters[lora_nickname].clear()
 
     config = self.server_args.pipeline_config.dit_config.arch_config
-
-    param_names_mapping_fn = get_param_names_mapping(config.param_names_mapping)
     lora_param_names_mapping_fn = get_param_names_mapping(config.lora_param_names_mapping)
 
-    to_merge_params: defaultdict[Hashable, dict[Any, Any]] = defaultdict(dict)
     for name, weight in lora_state_dict.items():
-      name = name.replace("diffusion_model.", "")
-      name = name.replace(".weight", "")
-
-      # misc format -> HF-format
+      name = name.removesuffix(".weight")
       name, _, _ = lora_param_names_mapping_fn(name)
-      # HF format (LoRA) -> dit format
-      target_name, merge_index, num_params_to_merge = param_names_mapping_fn(name)
 
-      if merge_index is not None:
-        to_merge_params[target_name][merge_index] = weight
-        if len(to_merge_params[target_name]) == num_params_to_merge:
-          sorted_tensors = [to_merge_params[target_name][i] for i in range(num_params_to_merge)]
-          # Use stack instead of cat because it needs to be compatible with TP.
-          weight = torch.stack(sorted_tensors, dim=0)
-          del to_merge_params[target_name]
-        else:
-          continue
-
-      if target_name in self.lora_adapters[lora_nickname]:
-        raise ValueError(f"Target name {target_name} already exists in lora_adapters for {lora_nickname}!")
+      if name in self.lora_adapters[lora_nickname]:
+        raise ValueError(f"Key {name} already exists in lora_adapters for {lora_nickname}!")
 
       self.lora_adapters[lora_nickname][name] = weight.to(self.device)
 

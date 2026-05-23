@@ -40,18 +40,19 @@ class WanArchConfig(DiTArchConfig):
     }
   )
 
+  # [._] handles both diffusers (blocks.0.self_attn.q.…) and kohya (blocks_0_self_attn_q.…) style.
   lora_param_names_mapping: dict = field(
     default_factory=lambda: {
-      r"^blocks\.(\d+)\.self_attn\.q\.(.*)$": r"blocks.\1.to_q.\2",
-      r"^blocks\.(\d+)\.self_attn\.k\.(.*)$": r"blocks.\1.to_k.\2",
-      r"^blocks\.(\d+)\.self_attn\.v\.(.*)$": r"blocks.\1.to_v.\2",
-      r"^blocks\.(\d+)\.self_attn\.o\.(.*)$": r"blocks.\1.to_out.\2",
-      r"^blocks\.(\d+)\.cross_attn\.q\.(.*)$": r"blocks.\1.attn2.to_q.\2",
-      r"^blocks\.(\d+)\.cross_attn\.k\.(.*)$": r"blocks.\1.attn2.to_k.\2",
-      r"^blocks\.(\d+)\.cross_attn\.v\.(.*)$": r"blocks.\1.attn2.to_v.\2",
-      r"^blocks\.(\d+)\.cross_attn\.o\.(.*)$": r"blocks.\1.attn2.to_out.\2",
-      r"^blocks\.(\d+)\.ffn\.0\.(.*)$": r"blocks.\1.ffn.fc_in.\2",
-      r"^blocks\.(\d+)\.ffn\.2\.(.*)$": r"blocks.\1.ffn.fc_out.\2",
+      r"^blocks[._](\d+)[._]self_attn[._]q\.(.*)$": r"blocks.\1.to_q.\2",
+      r"^blocks[._](\d+)[._]self_attn[._]k\.(.*)$": r"blocks.\1.to_k.\2",
+      r"^blocks[._](\d+)[._]self_attn[._]v\.(.*)$": r"blocks.\1.to_v.\2",
+      r"^blocks[._](\d+)[._]self_attn[._]o\.(.*)$": r"blocks.\1.to_out.\2",
+      r"^blocks[._](\d+)[._]cross_attn[._]q\.(.*)$": r"blocks.\1.attn2.to_q.\2",
+      r"^blocks[._](\d+)[._]cross_attn[._]k\.(.*)$": r"blocks.\1.attn2.to_k.\2",
+      r"^blocks[._](\d+)[._]cross_attn[._]v\.(.*)$": r"blocks.\1.attn2.to_v.\2",
+      r"^blocks[._](\d+)[._]cross_attn[._]o\.(.*)$": r"blocks.\1.attn2.to_out.\2",
+      r"^blocks[._](\d+)[._]ffn[._]0\.(.*)$": r"blocks.\1.ffn.fc_in.\2",
+      r"^blocks[._](\d+)[._]ffn[._]2\.(.*)$": r"blocks.\1.ffn.fc_out.\2",
     }
   )
 
