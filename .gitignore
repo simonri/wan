@@ -11,3 +11,4 @@ wan.egg-info
 traces/
 .cuda-nvcc
 cache
+examples

@@ -170,3 +170,12 @@ class RIFE:
     result.append(frames[-1])
     multiplier = 2**exp
     return result, multiplier
+
+
+def interpolate_video_frames(
+  frames: list[np.ndarray],
+  exp: int = 1,
+  scale: float = 1.0,
+) -> tuple[list[np.ndarray], int]:
+  rife = RIFE(ckpt_name="flownet")
+  return rife.interpolate(frames, exp=exp, scale=scale)
