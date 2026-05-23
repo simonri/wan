@@ -1,5 +1,4 @@
 import math
-import re
 
 import torch
 import torch.nn as nn
@@ -314,12 +313,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
     arch = server_args.pipeline_config.dit_config.arch_config
 
-    combined_mapping = dict(arch.param_names_mapping)
-    for old_suffix, new_suffix in arch.block_param_names_mapping.items():
-      pattern = rf"(blocks\.\d+\.){re.escape(old_suffix)}"
-      combined_mapping[pattern] = rf"\g<1>{new_suffix}"
-
-    mapping_fn = get_param_names_mapping(combined_mapping)
+    mapping_fn = get_param_names_mapping(arch.param_names_mapping)
     state_dict = {mapping_fn(k)[0]: v for k, v in state_dict.items()}
 
     self.load_state_dict(state_dict, strict=True)

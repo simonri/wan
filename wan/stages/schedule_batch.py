@@ -71,7 +71,7 @@ class Req:
 
     raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-  def __set_attr__(self, name: str, value: any) -> None:
+  def __setattr__(self, name: str, value: any) -> None:
     if name == "sampling_params":
       object.__setattr__(self, name, value)
 

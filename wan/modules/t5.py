@@ -238,5 +238,5 @@ class T5Encoder(nn.Module):
     print(f"Loading T5 encoder from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
     target_device = get_local_torch_device()
     state_dict = torch.load(model_path, map_location=target_device, weights_only=True)
-    self.load_state_dict(state_dict, strict=False)
+    self.load_state_dict(state_dict, strict=True)
     self.eval().requires_grad_(False)

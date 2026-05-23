@@ -1,5 +1,6 @@
 import argparse
 import logging
+import pathlib
 import sys
 from datetime import datetime
 
@@ -45,10 +46,21 @@ def generate(args):
 
   # load loras
   wan_i2v.set_lora(
-    lora_nickname=["high_noise", "low_noise"],
-    lora_path=[
+    lora_nicknames=[
+      "high_noise",
+      "low_noise",
+    ],
+    lora_paths=[
       "models/loras/lightning_high_noise_model.safetensors",
       "models/loras/lightning_low_noise_model.safetensors",
+    ],
+    targets=[
+      "transformer",
+      "transformer_2",
+    ],
+    strengths=[
+      1.0,
+      1.0,
     ],
   )
 
@@ -68,7 +80,11 @@ def generate(args):
 
   if args.save_file is None:
     formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    args.save_file = f"{formatted_time}.mp4"
+    args.save_file = pathlib.Path(server_args.output_path) / f"{formatted_time}.mp4"
+  else:
+    args.save_file = pathlib.Path(args.save_file)
+
+  print(f"Saving generated video to {args.save_file}")
 
   save_video(
     tensor=output_batch.output,
@@ -78,17 +94,6 @@ def generate(args):
     normalize=True,
     value_range=(-1, 1),
   )
-
-  # logging.info(f"Saving generated video to {args.save_file}")
-  # save_video(
-  #   tensor=video[None],
-  #   save_file=args.save_file,
-  #   fps=cfg.dit_config.sample_fps,
-  #   nrow=1,
-  #   normalize=True,
-  #   value_range=(-1, 1),
-  # )
-  # del video
 
   torch.cuda.synchronize()
   logging.info("Finished.")

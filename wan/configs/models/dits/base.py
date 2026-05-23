@@ -1,9 +1,13 @@
-from dataclasses import field
+from dataclasses import dataclass, field
 
 from wan.configs.models.base import ArchConfig, ModelConfig
 
 
+@dataclass
 class DiTArchConfig(ArchConfig):
+  param_names_mapping: dict = field(default_factory=dict)
+  lora_param_names_mapping: dict = field(default_factory=dict)
+
   num_attention_heads: int = 0
   num_channels_latents: int = 0
 
@@ -11,5 +15,6 @@ class DiTArchConfig(ArchConfig):
   boundary_ratio: float | None = None
 
 
+@dataclass
 class DiTConfig(ModelConfig):
   arch_config: DiTArchConfig = field(default_factory=DiTArchConfig)

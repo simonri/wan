@@ -40,6 +40,9 @@ class WanI2VConfig(PipelineConfig):
     assert torch.isnan(hidden_states).sum() == 0
     prompt_embeds = [u[:v] for u, v in zip(hidden_states, seq_lens, strict=True)]
     return torch.stack(
-      [torch.cat([u, u.new_zeros(512 - u.size(0), u.size(1))]) for u in prompt_embeds],
+      [
+        torch.cat([u, u.new_zeros(self.text_encoder_config.arch_config.text_len - u.size(0), u.size(1))])
+        for u in prompt_embeds
+      ],
       dim=0,
     )

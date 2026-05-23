@@ -51,16 +51,12 @@ class DenoisingStage(PipelineStage):
     self,
     transformer,
     scheduler: FlowUniPCMultistepScheduler,
-    pipeline=None,
     transformer_2=None,
-    vae=None,
   ):
     super().__init__()
     self.transformer = transformer
     self.transformer_2 = transformer_2
-
     self.scheduler = scheduler
-    self.vae = vae
 
   def _handle_boundary_ratio(
     self, server_args: ServerArgs, batch: Req, scheduler: FlowUniPCMultistepScheduler

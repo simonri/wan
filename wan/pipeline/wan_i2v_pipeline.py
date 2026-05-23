@@ -96,8 +96,6 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
         transformer=self.get_module("transformer"),
         transformer_2=self.get_module("transformer_2"),
         scheduler=self.get_module("scheduler"),
-        pipeline=self,
-        vae=self.get_module("vae"),
       )
     )
 
