@@ -30,3 +30,14 @@ class PipelineBase(ABC):
     print("Running pipeline stages")
     output_batch = self.executor.execute(self._stages, batch, server_args)
     return output_batch
+
+  @torch.no_grad()
+  def forward_batch(
+    self,
+    batches: list[Req],
+    server_args: ServerArgs,
+  ) -> list[OutputBatch]:
+    if len(batches) == 1:
+      return [self.forward(batches[0], server_args)]
+
+    return self.executor.execute_group(self._stages, batches, server_args)

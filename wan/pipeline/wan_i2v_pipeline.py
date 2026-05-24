@@ -1,3 +1,6 @@
+import time
+
+import torch
 from transformers import AutoTokenizer
 
 from wan.modules.model import WanModel
@@ -7,16 +10,16 @@ from wan.pipeline.base import PipelineBase
 from wan.pipeline.executor import BaseExecutor
 from wan.pipeline.lora_pipeline import LoRAPipeline
 from wan.platform import get_local_torch_device
+from wan.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
 from wan.server_args import ServerArgs
 from wan.stages.decoding import DecodingStage
 from wan.stages.denoising import DenoisingStage
 from wan.stages.image_encoding import ImageVAEEncodingStage
 from wan.stages.input_validation import InputValidationStage
 from wan.stages.latent_preparation import LatentPreparationStage
-from wan.stages.text_encoding import TextEncodingStage
+from wan.stages.text_encoding import LazyTextEncoder, TextEncodingStage
 from wan.stages.timestep_preparation import TimestepPreparationStage
 from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype, skip_init_modules
-from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 
 class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
@@ -31,40 +34,53 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
     pipeline_config = server_args.pipeline_config
     local_torch_device = get_local_torch_device()
 
+    t_total = time.perf_counter()
+
+    t0 = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained("google/umt5-xxl")
+    print(f"  tokenizer init: {time.perf_counter() - t0:.2f}s")
 
-    # init text encoder
+    # T5 and VAE: meta + assign=True + direct-to-GPU read (fast for small/medium files)
     text_encoder_dtype = PRECISION_TO_TYPE[pipeline_config.text_encoder_precision]
-    with set_default_torch_dtype(text_encoder_dtype), skip_init_modules():
-      text_encoder = T5Encoder(config=pipeline_config.text_encoder_config).to(local_torch_device)
-    text_encoder.load("models/text_encoders/models_t5_umt5-xxl-enc-bf16.pth", server_args)
 
-    # init vae
+    def build_text_encoder() -> T5Encoder:
+      t0 = time.perf_counter()
+      with torch.device("meta"), set_default_torch_dtype(text_encoder_dtype):
+        encoder = T5Encoder(config=pipeline_config.text_encoder_config)
+      print(f"  T5 construct (meta): {time.perf_counter() - t0:.2f}s")
+      encoder.load("models/text_encoders/models_t5_umt5-xxl-enc-bf16.safetensors", server_args)
+      return encoder
+
+    text_encoder = LazyTextEncoder(build_text_encoder)
+
     vae_dtype = PRECISION_TO_TYPE[pipeline_config.vae_precision]
-    with set_default_torch_dtype(vae_dtype), skip_init_modules():
-      vae = Wan2_1_VAE(config=pipeline_config.vae_config).to(local_torch_device)
+    t0 = time.perf_counter()
+    with torch.device("meta"), set_default_torch_dtype(vae_dtype):
+      vae = Wan2_1_VAE(config=pipeline_config.vae_config)
+    print(f"  VAE construct (meta): {time.perf_counter() - t0:.2f}s")
     vae.load("models/vae/wan_2.1_vae.safetensors", server_args)
 
-    scheduler = FlowUniPCMultistepScheduler(
+    scheduler = FlowMatchEulerDiscreteScheduler(
       shift=pipeline_config.flow_shift,
     )
 
-    # init transformer 1
+    # Transformers: pre-allocate on GPU and copy CPU state_dict in.
+    # Direct-to-GPU safetensors and post-load .to(device) were both significantly slower
+    # for 28GB checkpoints; the CPU-staged + in-place copy_ path is fastest empirically.
     transformer_dtype = PRECISION_TO_TYPE[pipeline_config.dit_precision]
+    t0 = time.perf_counter()
     with set_default_torch_dtype(transformer_dtype), skip_init_modules():
-      transformer = WanModel(
-        config=pipeline_config.dit_config,
-      ).to(local_torch_device)
-
+      transformer = WanModel(config=pipeline_config.dit_config).to(local_torch_device)
+    print(f"  Transformer construct+to(device): {time.perf_counter() - t0:.2f}s")
     transformer.load("models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors", server_args)
 
-    # init transformer 2
+    t0 = time.perf_counter()
     with set_default_torch_dtype(transformer_dtype), skip_init_modules():
-      transformer_2 = WanModel(
-        config=pipeline_config.dit_config,
-      ).to(local_torch_device)
-
+      transformer_2 = WanModel(config=pipeline_config.dit_config).to(local_torch_device)
+    print(f"  Transformer_2 construct+to(device): {time.perf_counter() - t0:.2f}s")
     transformer_2.load("models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors", server_args)
+
+    print(f"== total load_modules: {time.perf_counter() - t_total:.2f}s ==")
 
     return {
       "text_encoder": text_encoder,

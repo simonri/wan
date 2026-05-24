@@ -9,6 +9,7 @@ class ServerArgs:
 
   output_path: str | None = "outputs/"
   input_save_path: str | None = "inputs/uploads"
+  text_embed_cache_dir: str | None = "cache/text_embeds"
 
 
 _global_server_args: ServerArgs | None = None

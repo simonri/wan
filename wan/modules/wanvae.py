@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,7 +8,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from safetensors.torch import load_file as safetensors_load_file
 
 from wan.configs.models.vaes.wanvae import WanVAEConfig
-from wan.platform import CudaPlatform
+from wan.platform import CudaPlatform, get_local_torch_device
 from wan.server_args import ServerArgs
 
 CACHE_T = 2
@@ -528,14 +530,22 @@ class Wan2_1_VAE(nn.Module):
       config.dropout,
     )
 
-    _to_vae_channels_last(self)
-
   def load(self, model_path: str, server_args: ServerArgs):
     gpu_mem_before_loading = CudaPlatform.get_available_gpu_memory()
     print(f"Loading VAE from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
-    state_dict = safetensors_load_file(model_path)
-    self.load_state_dict(state_dict, strict=True)
+
+    t0 = time.perf_counter()
+    target_device = get_local_torch_device()
+    state_dict = safetensors_load_file(model_path, device=str(target_device))
+    t_read = time.perf_counter() - t0
+
+    t1 = time.perf_counter()
+    self.load_state_dict(state_dict, strict=True, assign=True)
+    t_copy = time.perf_counter() - t1
+
     self.eval().requires_grad_(False)
+    _to_vae_channels_last(self)
+    print(f"  VAE load: read={t_read:.2f}s  load_state_dict={t_copy:.2f}s  total={(t_read + t_copy):.2f}s")
 
   def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
     dtype = next(self.parameters()).dtype

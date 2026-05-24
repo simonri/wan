@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Any
+
 import PIL.Image
 import torch
 
@@ -8,6 +11,41 @@ from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
 from wan.torch_utils import PRECISION_TO_TYPE
 from wan.vision_utils import normalize, numpy_to_pt, pil_to_numpy
+
+
+@dataclass(frozen=True)
+class ImageVAEEncodingFingerprint:
+  image_source: Any
+  height: int | None
+  width: int | None
+  num_frames: int | None
+  vae_precision: Any
+
+
+def _freeze_image_source_value(value):
+  """Build a hashable identity fragment for image inputs.
+
+  Image inputs are often PIL/numpy/tensor objects. For file paths we can use
+  the path value; for in-memory objects we only dedup when the exact same
+  object instance is shared by multiple requests. This avoids expensive image
+  hashing and avoids treating two mutable image objects as equivalent just
+  because they currently have the same shape.
+  """
+  if isinstance(value, (list, tuple)):
+    return tuple(_freeze_image_source_value(item) for item in value)
+  if isinstance(value, (str, int, float, bool, type(None))):
+    return value
+  return ("object", id(value))
+
+
+def _build_image_source_fingerprint(batch: Req, *, prefer_vae_image: bool = False):
+  """Return the image input fragment used by image encoding fingerprints."""
+  if batch.image_path is not None:
+    return ("path", PipelineStage.freeze_for_dedup(batch.image_path))
+  image = batch.vae_image if prefer_vae_image and batch.vae_image is not None else None
+  if image is None:
+    image = batch.condition_image
+  return ("image", _freeze_image_source_value(image))
 
 
 class ImageVAEEncodingStage(PipelineStage):
@@ -97,3 +135,16 @@ class ImageVAEEncodingStage(PipelineStage):
     batch.image_latent = torch.cat(all_image_latents, dim=1)
 
     return batch
+
+  def build_dedup_fingerprint(self, batch: Req, server_args: ServerArgs) -> ImageVAEEncodingFingerprint | int:
+    if batch.condition_image is None:
+      return id(batch)
+
+    return ImageVAEEncodingFingerprint(
+      image_source=_build_image_source_fingerprint(batch, prefer_vae_image=True),
+      height=batch.height,
+      width=batch.width,
+      num_frames=batch.num_frames,
+      vae_precision=server_args.pipeline_config.vae_precision,
+      vae_tiling=bool(server_args.pipeline_config.vae_tiling),
+    )

@@ -18,8 +18,8 @@ from wan.modules.t5 import T5EncoderModel
 from wan.modules.wanvae import Wan2_1_VAE
 from wan.stages.schedule_batch import Req
 from wan.stages.text_encoding import TextEncodingStage
+from wan.schedulers.scheduling_flow_unipc_multistep import FlowUniPCMultistepScheduler
 from wan.utils.fm_solvers import FlowDPMSolverMultistepScheduler, get_sampling_sigmas, retrieve_timesteps
-from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 _LOW_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors"
 _HIGH_NOISE_I2V_CHECKPOINT = "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors"

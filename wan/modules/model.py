@@ -1,4 +1,5 @@
 import math
+import time
 
 import torch
 import torch.nn as nn
@@ -15,7 +16,7 @@ from wan.layers.mrope import NDRotaryEmbedding
 from wan.layers.rotary_embedding.utils import apply_flashinfer_rope_qk_inplace
 from wan.layers.visual_embedding import ModulateProjection, PatchEmbed, TimestepEmbedder
 from wan.loader.utils import get_param_names_mapping
-from wan.platform import CudaPlatform
+from wan.platform import CudaPlatform, get_local_torch_device
 from wan.server_args import ServerArgs
 
 __all__ = ['WanModel']
@@ -309,12 +310,24 @@ class WanModel(ModelMixin, ConfigMixin):
   def load(self, model_path: str, server_args: ServerArgs):
     gpu_mem_before_loading = CudaPlatform.get_available_gpu_memory()
     print(f"Loading Transformer from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
+
+    t0 = time.perf_counter()
     state_dict = safetensors_load_file(model_path)
+    t_read = time.perf_counter() - t0
 
+    t1 = time.perf_counter()
     arch = server_args.pipeline_config.dit_config.arch_config
-
     mapping_fn = get_param_names_mapping(arch.param_names_mapping)
     state_dict = {mapping_fn(k)[0]: v for k, v in state_dict.items()}
+    t_rename = time.perf_counter() - t1
 
+    t2 = time.perf_counter()
     self.load_state_dict(state_dict, strict=True)
+    torch.cuda.synchronize()
+    t_copy = time.perf_counter() - t2
+
     self.eval().requires_grad_(False)
+    print(
+      f"  Transformer load: read={t_read:.2f}s  rename={t_rename:.2f}s  "
+      f"load_state_dict={t_copy:.2f}s  total={(t_read + t_rename + t_copy):.2f}s"
+    )

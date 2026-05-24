@@ -7,11 +7,11 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from wan.platform import get_local_torch_device
+from wan.schedulers.base import BaseScheduler
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
 from wan.torch_utils import PRECISION_TO_TYPE
-from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 
 @dataclass(slots=True)
@@ -50,7 +50,7 @@ class DenoisingStage(PipelineStage):
   def __init__(
     self,
     transformer,
-    scheduler: FlowUniPCMultistepScheduler,
+    scheduler: BaseScheduler,
     transformer_2=None,
   ):
     super().__init__()
@@ -58,9 +58,7 @@ class DenoisingStage(PipelineStage):
     self.transformer_2 = transformer_2
     self.scheduler = scheduler
 
-  def _handle_boundary_ratio(
-    self, server_args: ServerArgs, batch: Req, scheduler: FlowUniPCMultistepScheduler
-  ) -> float:
+  def _handle_boundary_ratio(self, server_args: ServerArgs, batch: Req, scheduler: BaseScheduler) -> float:
     boundary_ratio = server_args.pipeline_config.dit_config.boundary_ratio
     if batch.boundary_ratio is not None:
       print(f"Overriding boundary ratio from {boundary_ratio} to {batch.boundary_ratio}")
@@ -251,6 +249,29 @@ class DenoisingStage(PipelineStage):
       return_dict=False,
     )[0]
 
+  def _before_denoising_loop(self, ctx: DenoisingContext, batch: Req, server_args: ServerArgs):
+    self._reset_scheduler_loop_state(ctx.scheduler)
+    ctx.scheduler.set_begin_index(0)
+
+  def _reset_scheduler_loop_state(self, scheduler) -> None:
+    if hasattr(scheduler, "_step_index"):
+      scheduler._step_index = None
+    if hasattr(scheduler, "_begin_index"):
+      scheduler._begin_index = None
+    if hasattr(scheduler, "lower_order_nums"):
+      scheduler.lower_order_nums = 0
+    if hasattr(scheduler, "last_sample"):
+      scheduler.last_sample = None
+    if hasattr(scheduler, "this_order"):
+      scheduler.this_order = 0
+
+    solver_order = getattr(getattr(scheduler, "config", None), "solver_order", 0)
+    if solver_order:
+      if hasattr(scheduler, "model_outputs"):
+        scheduler.model_outputs = [None] * solver_order
+      if hasattr(scheduler, "timestep_list"):
+        scheduler.timestep_list = [None] * solver_order
+
   def _post_denoising_loop(self, batch: Req, latents: torch.Tensor):
     batch.latents = latents
 
@@ -260,6 +281,8 @@ class DenoisingStage(PipelineStage):
   @torch.no_grad()
   def forward(self, batch: Req, server_args: ServerArgs) -> Req:
     ctx = self._prepare_denoising_loop(batch, server_args)
+
+    self._before_denoising_loop(ctx, batch, server_args)
 
     local_device = get_local_torch_device()
 

@@ -1,11 +1,12 @@
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from wan.platform import get_local_torch_device
+from wan.schedulers.base import BaseScheduler
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import Req
-from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 
 def get_or_create_request_scheduler(
@@ -20,8 +21,19 @@ def get_or_create_request_scheduler(
   return batch.scheduler
 
 
+@dataclass(frozen=True)
+class TimestepPreparationFingerprint:
+  num_inference_steps: int
+  timesteps: Any
+  sigmas: Any
+  n_tokens: int | None
+  height: int | None
+  width: int | None
+  num_frames: int | None
+
+
 class TimestepPreparationStage(PipelineStage):
-  def __init__(self, scheduler: FlowUniPCMultistepScheduler):
+  def __init__(self, scheduler: BaseScheduler):
     super().__init__()
     self.scheduler = scheduler
 
@@ -40,3 +52,14 @@ class TimestepPreparationStage(PipelineStage):
     batch.scheduler = scheduler
 
     return batch
+
+  def build_dedup_fingerprint(self, batch: Req, server_args: ServerArgs) -> TimestepPreparationFingerprint:
+    return TimestepPreparationFingerprint(
+      num_inference_steps=batch.num_inference_steps,
+      timesteps=self.freeze_for_dedup(batch.timesteps),
+      sigmas=self.freeze_for_dedup(batch.sigmas),
+      n_tokens=batch.n_tokens,
+      height=batch.height,
+      width=batch.width,
+      num_frames=batch.num_frames,
+    )

@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 class SamplingParams:
   prompt: str | list[str] = field(default=None)
 
+  output_path: str | None = None
+  output_file_name: str | None = None
+
   # batch info
   num_outputs_per_prompt: int = 1
   seed: int = field(default=42)

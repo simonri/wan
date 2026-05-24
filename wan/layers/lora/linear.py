@@ -27,7 +27,9 @@ class BaseLayerWithLoRA(nn.Module):
     self.base_layer: nn.Module = base_layer
 
     self.merged: bool = False
-    self.cpu_weight = base_layer.weight.detach().to("cpu").clone()
+    # Pristine weight backup for exact restore on unmerge. Lazily snapshotted on first
+    # merge so layers that never receive a LoRA never pay the GPU->CPU copy.
+    self.cpu_weight: torch.Tensor | None = None
 
     self.disable_lora: bool = True
     self.lora_rank = lora_rank
@@ -37,6 +39,10 @@ class BaseLayerWithLoRA(nn.Module):
 
     self.lora_A = None
     self.lora_B = None
+
+  def _ensure_cpu_weight_snapshot(self) -> None:
+    if self.cpu_weight is None:
+      self.cpu_weight = self.base_layer.weight.detach().to("cpu").clone()
 
   @property
   def weight(self) -> torch.Tensor:
@@ -149,6 +155,9 @@ class BaseLayerWithLoRA(nn.Module):
 
     if not lora_list:
       raise ValueError("LoRA weights not set. Please set them first.")
+
+    # snapshot the pristine weight on first merge so unmerge can restore it exactly
+    self._ensure_cpu_weight_snapshot()
 
     current_device = self.base_layer.weight.data.device
     data = self.base_layer.weight.data.to(get_local_torch_device())

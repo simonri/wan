@@ -1,8 +1,10 @@
 import math
+import time
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from safetensors.torch import load_file as safetensors_load_file
 
 from wan.configs.models.encoders.t5 import T5Config
 from wan.platform import CudaPlatform, get_local_torch_device
@@ -236,7 +238,15 @@ class T5Encoder(nn.Module):
   def load(self, model_path: str, server_args: ServerArgs):
     gpu_mem_before_loading = CudaPlatform.get_available_gpu_memory()
     print(f"Loading T5 encoder from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
+
+    t0 = time.perf_counter()
     target_device = get_local_torch_device()
-    state_dict = torch.load(model_path, map_location=target_device, weights_only=True)
-    self.load_state_dict(state_dict, strict=True)
+    state_dict = safetensors_load_file(model_path, device=str(target_device))
+    t_read = time.perf_counter() - t0
+
+    t1 = time.perf_counter()
+    self.load_state_dict(state_dict, strict=True, assign=True)
+    t_copy = time.perf_counter() - t1
+
     self.eval().requires_grad_(False)
+    print(f"  T5 load: read={t_read:.2f}s  load_state_dict={t_copy:.2f}s  total={(t_read + t_copy):.2f}s")

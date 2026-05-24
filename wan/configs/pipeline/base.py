@@ -97,3 +97,7 @@ class PipelineConfig:
     )
 
     return shape
+
+  def get_latent_dtype(self, prompt_dtype):
+    return prompt_dtype
+
