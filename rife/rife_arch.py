@@ -102,17 +102,20 @@ class Head(nn.Module):
 
 
 class IFNet(nn.Module):
+  # RIFE v4.25: 5 IFBlocks. The train-only `teacher` and `caltime` modules are
+  # intentionally omitted — they are not used during inference.
   def __init__(self):
     super().__init__()
     self.block0 = IFBlock(7 + 8, c=192)
     self.block1 = IFBlock(8 + 4 + 8 + 8, c=128)
-    self.block2 = IFBlock(8 + 4 + 8 + 8, c=64)
-    self.block3 = IFBlock(8 + 4 + 8 + 8, c=32)
+    self.block2 = IFBlock(8 + 4 + 8 + 8, c=96)
+    self.block3 = IFBlock(8 + 4 + 8 + 8, c=64)
+    self.block4 = IFBlock(8 + 4 + 8 + 8, c=32)
     self.encode = Head()
 
   def forward(self, x: torch.Tensor, timestep: float = 0.5, scale_list: list | None = None):
     if scale_list is None:
-      scale_list = [8, 4, 2, 1]
+      scale_list = [16, 8, 4, 2, 1]
 
     channel = x.shape[1] // 2
     img0 = x[:, :channel]
@@ -134,9 +137,9 @@ class IFNet(nn.Module):
     flow = None
     mask = None
 
-    block = [self.block0, self.block1, self.block2, self.block3]
+    block = [self.block0, self.block1, self.block2, self.block3, self.block4]
 
-    for i in range(4):
+    for i in range(5):
       if flow is None:
         flow, mask, feat = block[i](
           torch.cat((img0[:, :3], img1[:, :3], f0, f1, timestep), 1),
@@ -161,5 +164,5 @@ class IFNet(nn.Module):
       merged.append((warped_img0, warped_img1))
 
     mask = torch.sigmoid(mask)
-    merged[3] = warped_img0 * mask + warped_img1 * (1 - mask)
-    return flow_list, mask_list[3], merged
+    merged[4] = warped_img0 * mask + warped_img1 * (1 - mask)
+    return flow_list, mask_list[4], merged

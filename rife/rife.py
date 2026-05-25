@@ -10,10 +10,12 @@ from tqdm import tqdm
 
 from rife.rife_arch import IFNet
 
+# https://drive.google.com/file/d/1ZKjcbmt1hypiFprJPIKW0Tt0lr_2i7bg/view
+
 CKPT_CONFIGS = {
-  "flownet": {
-    "url": "https://huggingface.co/simonri/saferife/resolve/main/flownet.safetensors",
-    "file": "flownet.safetensors",
+  "rife-4.25": {
+    "url": "https://huggingface.co/simonri/saferife/resolve/main/rife-4.25.safetensors",
+    "file": "rife-4.25.safetensors",
   },
 }
 
@@ -69,19 +71,23 @@ class Model:
     """interpolate a single frame bwtween img0 and img1"""
     n, c, h, w = img0.shape
 
-    ph = ((h - 1) // 32 + 1) * 32
-    pw = ((w - 1) // 32 + 1) * 32
+    # v4.25 has 5 IFBlocks: the coarsest downsamples by scale_list[0]=16/scale, and each
+    # block's conv0 adds another 4x. The down/up round-trip is only exact when each padded
+    # dim is a multiple of that total (64/scale), so pad to it (>=64).
+    align = max(64, int(64 / scale))
+    ph = ((h - 1) // align + 1) * align
+    pw = ((w - 1) // align + 1) * align
     pad = (0, pw - w, 0, ph - h)
     img0 = F.pad(img0, pad)
     img1 = F.pad(img1, pad)
 
     imgs = torch.cat((img0, img1), 1)
-    scale_list = [8 / scale, 4 / scale, 2 / scale, 1 / scale]
+    scale_list = [16 / scale, 8 / scale, 4 / scale, 2 / scale, 1 / scale]
 
     with torch.no_grad():
       flow_list, mask, merged = self.flownet(imgs, timestep=timestep, scale_list=scale_list)
 
-    return merged[3][:, :, :h, :w]
+    return merged[-1][:, :, :h, :w]
 
 
 class RIFE:
@@ -177,5 +183,5 @@ def interpolate_video_frames(
   exp: int = 1,
   scale: float = 1.0,
 ) -> tuple[list[np.ndarray], int]:
-  rife = RIFE(ckpt_name="flownet")
+  rife = RIFE(ckpt_name="rife-4.25")
   return rife.interpolate(frames, exp=exp, scale=scale)
