@@ -25,7 +25,7 @@ class SamplingParams:
 
   # profiling
   profile: bool = False
-  num_profiled_timesteps: int = 5
+  num_profiled_timesteps: int = 2
   profile_all_stages: bool = False
 
   @property

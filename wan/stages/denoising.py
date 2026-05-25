@@ -23,12 +23,14 @@ class DenoisingContext:
   autocast_enabled: bool
   timesteps: torch.Tensor
   num_inference_steps: int
+  num_warmup_steps: int
   latents: torch.Tensor
   boundary_timestep: float | None
   z: torch.Tensor | None
   reserved_frames_masks: torch.Tensor | None
   seq_len: int | None
   guidance: torch.Tensor
+  is_warmup: bool
 
   def __getitem__(self, key: str) -> Any:
     return getattr(self, key)
@@ -81,6 +83,7 @@ class DenoisingStage(PipelineStage):
     boundary_timestep = self._handle_boundary_ratio(server_args, batch, scheduler)
     timesteps = batch.timesteps
     num_inference_steps = batch.num_inference_steps
+    num_warmup_steps = len(timesteps) - num_inference_steps * scheduler.order
 
     target_dtype = PRECISION_TO_TYPE[server_args.pipeline_config.dit_precision]
     autocast_enabled = target_dtype != torch.float32
@@ -112,6 +115,8 @@ class DenoisingStage(PipelineStage):
       autocast_enabled=autocast_enabled,
       target_dtype=target_dtype,
       num_inference_steps=num_inference_steps,
+      num_warmup_steps=num_warmup_steps,
+      is_warmup=batch.is_warmup,
     )
 
   def _select_and_manage_model(
@@ -183,26 +188,6 @@ class DenoisingStage(PipelineStage):
       encoder_hidden_states=encoder_hidden_states,
     )
 
-  def _predict_noise_with_cfg(
-    self,
-    current_model: nn.Module,
-    latent_model_input: torch.Tensor,
-    timestep,
-    batch: Req,
-    timestep_index: int,
-    target_dtype,
-    server_args: ServerArgs,
-    guidance: torch.Tensor,
-    latents: torch.Tensor,
-  ) -> torch.Tensor:
-    raw = self._predict_noise(
-      current_model=current_model,
-      latent_model_input=latent_model_input,
-      timestep=timestep,
-      encoder_hidden_states=batch.prompt_embeds.to(target_dtype),
-    )
-    return raw
-
   def _run_denoising_step(
     self,
     ctx: DenoisingContext,
@@ -230,16 +215,11 @@ class DenoisingStage(PipelineStage):
     latent_model_input = ctx.scheduler.scale_model_input(latent_model_input, step.t_device)
 
     # 4. run the model prediction path
-    noise_pred = self._predict_noise_with_cfg(
+    noise_pred = self._predict_noise(
       current_model=step.current_model,
       latent_model_input=latent_model_input,
       timestep=timestep,
-      batch=batch,
-      timestep_index=step.step_index,
-      target_dtype=ctx.target_dtype,
-      server_args=server_args,
-      guidance=ctx.guidance,
-      latents=ctx.latents,
+      encoder_hidden_states=batch.prompt_embeds.to(ctx.target_dtype),
     )
 
     # 5. advance the scheduler state with the predicted noise
@@ -299,6 +279,8 @@ class DenoisingStage(PipelineStage):
       dtype=ctx.target_dtype,
       enabled=ctx.autocast_enabled,
     ):
+      num_timesteps = timesteps_cpu.shape[0]
+
       with self.progress_bar(total=ctx.num_inference_steps) as progress_bar:
         for step_index, t_host in enumerate(timesteps_cpu):
           step = self._prepare_step_state(
@@ -312,8 +294,13 @@ class DenoisingStage(PipelineStage):
 
           self._run_denoising_step(ctx, step, batch, server_args)
 
-          progress_bar.update()
-          self.step_profile()
+          if step_index == num_timesteps - 1 or (
+            (step_index + 1) > ctx.num_warmup_steps and (step_index + 1) % ctx.scheduler.order == 0
+          ):
+            progress_bar.update()
+
+          if not ctx.is_warmup:
+            self.step_profile()
 
     self._post_denoising_loop(batch, ctx.latents)
     return batch

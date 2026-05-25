@@ -46,6 +46,8 @@ class Req:
   # latent tensors
   latents: torch.Tensor | None = None
 
+  is_warmup: bool = False
+
   def __init__(self, **kwargs):
     for name, value in self.__class__.__dataclass_fields__.items():
       if name in kwargs:
