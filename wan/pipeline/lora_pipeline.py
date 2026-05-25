@@ -21,6 +21,8 @@ class LoRAPipeline(PipelineBase):
   lora_rank: int | None
   lora_alpha: int | None
   lora_initialized: bool
+  # Track merge status per module
+  is_lora_merged: dict[str, bool]
 
   def __init__(self, *args, **kwargs) -> None:
     super().__init__(*args, **kwargs)
@@ -30,6 +32,7 @@ class LoRAPipeline(PipelineBase):
 
     self.lora_layers = {}
     self.lora_layers_transformer_2 = {}
+    self.is_lora_merged = {}
     self.lora_rank = None
     self.lora_alpha = None
     self.lora_initialized = False
@@ -79,9 +82,7 @@ class LoRAPipeline(PipelineBase):
         "transformer_2",
         self.lora_layers_transformer_2,
       )
-      print(
-        f"Converted {converted_count_2} layers to LoRA layers in transformer_2 ({time.perf_counter() - t0:.2f}s)"
-      )
+      print(f"Converted {converted_count_2} layers to LoRA layers in transformer_2 ({time.perf_counter() - t0:.2f}s)")
 
     print(f"== total convert_to_lora_layers: {time.perf_counter() - t_total:.2f}s ==")
 
@@ -177,20 +178,15 @@ class LoRAPipeline(PipelineBase):
               layer.disable_lora = True
 
     total_layers = len(lora_layers)
-    example_limit = 8
     for idx, path in enumerate(lora_paths):
       missing_layers = missing_layers_by_adapter[idx]
       if not missing_layers:
         continue
-      missing_count = len(missing_layers)
       applied_count = applied_count_by_adapter[idx]
-      examples = ", ".join(missing_layers[:example_limit])
-      if missing_count > example_limit:
-        examples += ", ..."
       if applied_count == 0:
-        print(f"LoRA adapter {path} did not match any LoRA layer. Examples: {examples}")
+        print(f"LoRA adapter {path} did not match any LoRA layer")
       else:
-        print(f"LoRA adapter {path} covers {applied_count}/{total_layers} layers. Examples: {examples}")
+        print(f"LoRA adapter {path} covers {applied_count}/{total_layers} layers")
 
     print(f"  _apply_lora_to_layers ({len(lora_nicknames)} adapters): {time.perf_counter() - t_apply:.2f}s")
     return adapted_count
@@ -284,6 +280,40 @@ class LoRAPipeline(PipelineBase):
           clear_existing=True,
           merge_weights=True,
         )
+        # TODO: we need to handle strength change here
         adapted_count += count
+        self.is_lora_merged[module_name] = True
 
     print(f"== total set_lora: {time.perf_counter() - t_set_lora:.2f}s ==")
+
+  def deactivate_lora_weights(self, target: str = "all") -> None:
+    """Return the target transformer(s) to their pristine base weights.
+
+    Unmerges any baked-in LoRA (restoring the CPU snapshot taken at first merge)
+    and disables the dynamic path, so the forward runs the raw checkpoint with no
+    LoRA applied. Handles both merged and dynamic layers and reuses the snapshot,
+    so it costs about as much as a swap (~1s/transformer), not a fresh merge.
+    """
+    target_modules, error = self._get_target_lora_layers(target)
+    if error:
+      print(f"deactivate_lora_weights: {error}")
+    if not target_modules:
+      return
+
+    modules_requiring_unmerge = []
+    for module_name, lora_layers_dict in target_modules:
+      if self.is_lora_merged.get(module_name, False) or any(layer.merged for layer in lora_layers_dict.values()):
+        modules_requiring_unmerge.append((module_name, lora_layers_dict))
+
+    t = time.perf_counter()
+    for module_name, lora_layers_dict in target_modules:
+      for layer in lora_layers_dict.values():
+        if layer.merged:
+          layer.unmerge_lora_weights()  # restore pristine base from the CPU snapshot
+        if not layer.disable_lora:
+          layer.disable_lora = True  # force the base-only branch in forward
+
+      self.is_lora_merged[module_name] = False
+      print(f"LoRA weights deactivated for module {module_name}")
+
+    print(f"== total deactivate_lora_weights({target}): {time.perf_counter() - t:.2f}s ==")
