@@ -7,6 +7,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from wan.platform import get_local_torch_device
+from wan.profiler import DiffusionProfiler
 from wan.schedulers.base import BaseScheduler
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
@@ -278,6 +279,11 @@ class DenoisingStage(PipelineStage):
   def progress_bar(self, iterable: Iterable | None = None, total: int | None = None):
     return tqdm(iterable, total=total)
 
+  def step_profile(self):
+    profiler = DiffusionProfiler.get_instance()
+    if profiler:
+      profiler.step_denoising_step()
+
   @torch.no_grad()
   def forward(self, batch: Req, server_args: ServerArgs) -> Req:
     ctx = self._prepare_denoising_loop(batch, server_args)
@@ -307,6 +313,7 @@ class DenoisingStage(PipelineStage):
           self._run_denoising_step(ctx, step, batch, server_args)
 
           progress_bar.update()
+          self.step_profile()
 
     self._post_denoising_loop(batch, ctx.latents)
     return batch

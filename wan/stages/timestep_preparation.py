@@ -33,6 +33,9 @@ class TimestepPreparationFingerprint:
 
 
 class TimestepPreparationStage(PipelineStage):
+  deduplicated_tensor_tree_output_fields = ("timesteps",)
+  deduplicated_deepcopy_output_fields = ("scheduler",)
+
   def __init__(self, scheduler: BaseScheduler):
     super().__init__()
     self.scheduler = scheduler

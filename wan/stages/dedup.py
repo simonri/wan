@@ -7,7 +7,7 @@ from wan.server_args import ServerArgs
 from wan.stages.schedule_batch import Req
 
 
-class StageDedupMixing:
+class StageDedupMixin:
   """
   Mixin for stage-local grouped-request dedupe.
   Handles only stage-local reuse.
@@ -38,6 +38,26 @@ class StageDedupMixing:
       return self.run_deduplicated_group(batches, server_args)
 
     return [self(batch, server_args) for batch in batches]
+
+  @staticmethod
+  def freeze_for_dedup(value: Any) -> Any:
+    """Convert common nested values into a hashable fingerprint fragment."""
+    if isinstance(value, torch.Tensor):
+      if value.numel() <= 256:
+        return (
+          "tensor",
+          tuple(value.shape),
+          str(value.dtype),
+          tuple(value.detach().cpu().reshape(-1).tolist()),
+        )
+      return ("tensor", tuple(value.shape), str(value.dtype), value.device.type)
+    if isinstance(value, dict):
+      return tuple(sorted((key, StageDedupMixin.freeze_for_dedup(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+      return tuple(StageDedupMixin.freeze_for_dedup(item) for item in value)
+    if isinstance(value, set):
+      return tuple(sorted(StageDedupMixin.freeze_for_dedup(item) for item in value))
+    return value
 
   def build_dedup_fingerprint(self, batch: Req, server_args: ServerArgs) -> Any:
     return id(batch)

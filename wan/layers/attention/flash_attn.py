@@ -36,9 +36,7 @@ def flash_attn_varlen_func_fake_out(
   sm_margin: int = 0,
   return_softmax_lse: bool = False,
   sinks: torch.Tensor | None = None,
-  ver: int = 4,
 ) -> torch.Tensor:
-  assert ver == 4, "only support flash attention v4"
   q, k, v = [maybe_contiguous(t) for t in (q, k, v)]
   num_head, head_dim = q.shape[-2:]
   if cu_seqlens_q is None:
@@ -92,9 +90,7 @@ def flash_attn_varlen_func_fake_out_lse(
   sm_margin: int = 0,
   return_softmax_lse: bool = True,
   sinks: torch.Tensor | None = None,
-  ver: int = 4,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-  assert ver == 4, "only support flash attention v4"
   q, k, v = [maybe_contiguous(t) for t in (q, k, v)]
   num_head, head_dim = q.shape[-2:]
   if cu_seqlens_q is None:
@@ -154,7 +150,6 @@ def flash_attn_varlen_func_op(
   sm_margin: int = 0,
   return_softmax_lse: bool = False,
   sinks: torch.Tensor | None = None,
-  ver: int = 4,
 ) -> torch.Tensor:
   if window_size is None:
     window_size = [-1, -1]
@@ -188,7 +183,6 @@ def flash_attn_varlen_func_op(
     sm_margin=sm_margin,
     return_softmax_lse=False,
     sinks=sinks,
-    ver=ver,
   )
 
 
@@ -218,7 +212,6 @@ def flash_attn_varlen_func_op_lse(
   sm_margin: int = 0,
   return_softmax_lse: bool = True,
   sinks: torch.Tensor | None = None,
-  ver: int = 4,
 ) -> tuple[torch.Tensor, torch.Tensor]:
   if window_size is None:
     window_size = [-1, -1]
@@ -252,7 +245,6 @@ def flash_attn_varlen_func_op_lse(
     sm_margin=sm_margin,
     return_softmax_lse=True,
     sinks=sinks,
-    ver=ver,
   )
 
 
@@ -296,8 +288,6 @@ class FlashAttentionImpl(AttentionImpl):
     *,
     return_softmax_lse: bool = False,
   ):
-    fa_ver = 4
-
     max_seqlen_q = query.shape[1]
     max_seqlen_k = key.shape[1]
 
@@ -313,7 +303,6 @@ class FlashAttentionImpl(AttentionImpl):
         softmax_scale=self.softmax_scale,
         causal=self.causal,
         return_softmax_lse=True,
-        ver=fa_ver,
       )
       return out_tensor, softmax_lse
     out_tensor = flash_attn_varlen_func_op(
@@ -327,6 +316,5 @@ class FlashAttentionImpl(AttentionImpl):
       softmax_scale=self.softmax_scale,
       causal=self.causal,
       return_softmax_lse=False,
-      ver=fa_ver,
     )
     return out_tensor

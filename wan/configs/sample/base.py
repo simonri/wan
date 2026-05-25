@@ -22,3 +22,21 @@ class SamplingParams:
   guidance_scale: float = 1.0
   guidance_scale_2: float = None
   boundary_ratio: float | None = None
+
+  # profiling
+  profile: bool = False
+  num_profiled_timesteps: int = 5
+  profile_all_stages: bool = False
+
+  @property
+  def n_tokens(self) -> int:
+    if self.height and self.width:
+      latents_size = [
+        (self.num_frames - 1) // 4 + 1,
+        self.height // 8,
+        self.width // 8,
+      ]
+      n_tokens = latents_size[0] * latents_size[1] * latents_size[2]
+    else:
+      n_tokens = -1
+    return n_tokens

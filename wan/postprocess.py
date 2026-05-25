@@ -14,6 +14,7 @@ def post_process_sample(
   save_output: bool,
   save_file_path: str,
   output_compression: int | None = None,
+  crf: int | None = None,
   enable_frame_interpolation: bool = False,
   frame_interpolation_exp: int = 1,
   frame_interpolation_scale: float = 1.0,
@@ -40,15 +41,29 @@ def post_process_sample(
   if save_output:
     if save_file_path:
       os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
-      quality = output_compression / 10 if output_compression is not None else 5
-      imageio.mimsave(
-        save_file_path,
-        frames,
-        fps=fps,
-        format="mp4",
-        codec="libx264",
-        quality=quality,
-      )
+      if crf is not None:
+        # Constant Rate Factor (x264): lower = higher quality, 23 is the x264 default.
+        # -crf and imageio's `quality` (qscale VBR) are mutually exclusive, so disable
+        # quality so the -crf passed via output_params is what actually drives encoding.
+        imageio.mimsave(
+          save_file_path,
+          frames,
+          fps=fps,
+          format="mp4",
+          codec="libx264",
+          quality=None,
+          output_params=["-crf", str(crf)],
+        )
+      else:
+        quality = output_compression / 10 if output_compression is not None else 5
+        imageio.mimsave(
+          save_file_path,
+          frames,
+          fps=fps,
+          format="mp4",
+          codec="libx264",
+          quality=quality,
+        )
     else:
       print("No output path provided, skipping save.")
 
@@ -62,6 +77,7 @@ def save_outputs(
   build_output_path: Callable[[int], str],
   *,
   output_compression: int | None = None,
+  crf: int | None = None,
   frames_out: list[Any] | None = None,
   enable_frame_interpolation: bool = False,
   frame_interpolation_exp: int = 1,
@@ -79,6 +95,7 @@ def save_outputs(
       save_output,
       save_file_path,
       output_compression=output_compression,
+      crf=crf,
       enable_frame_interpolation=enable_frame_interpolation,
       frame_interpolation_exp=frame_interpolation_exp,
       frame_interpolation_scale=frame_interpolation_scale,

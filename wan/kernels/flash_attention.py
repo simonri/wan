@@ -35,7 +35,6 @@ def flash_attn_with_kvcache(
   sinks=None,
   score_mod=None,
   aux_tensors=None,
-  ver=3,
   out=None,
 ):
   """
@@ -188,7 +187,6 @@ def flash_attn_varlen_func(
   sinks=None,
   score_mod=None,
   aux_tensors=None,
-  ver=3,
   out=None,
 ):
 

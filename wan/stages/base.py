@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
 
 from wan.server_args import ServerArgs, get_global_server_args
-from wan.stages.dedup import StageDedupMixing
+from wan.stages.dedup import StageDedupMixin
 from wan.stages.schedule_batch import Req
 
 
-class PipelineStage(StageDedupMixing, ABC):
+class PipelineStage(StageDedupMixin, ABC):
   def __init__(self):
     self.server_args = get_global_server_args()
 

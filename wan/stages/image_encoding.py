@@ -49,6 +49,8 @@ def _build_image_source_fingerprint(batch: Req, *, prefer_vae_image: bool = Fals
 
 
 class ImageVAEEncodingStage(PipelineStage):
+  deduplicated_output_fields = ("image_latent",)
+
   def __init__(self, vae: Wan2_1_VAE, **kwargs):
     super().__init__()
     self.vae = vae
@@ -146,5 +148,4 @@ class ImageVAEEncodingStage(PipelineStage):
       width=batch.width,
       num_frames=batch.num_frames,
       vae_precision=server_args.pipeline_config.vae_precision,
-      vae_tiling=bool(server_args.pipeline_config.vae_tiling),
     )

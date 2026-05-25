@@ -51,25 +51,24 @@ class WanArchConfig(DiTArchConfig):
   )
 
   patch_size: tuple[int, int, int] = (1, 2, 2)
+  text_len = 512
   num_attention_heads: int = 40
-  freq_dim: int = 256
-  num_layers: int = 40
-  eps: float = 1e-6
-  qk_norm: str = "rms_norm_across_heads"
-
   attention_head_dim: int = 128
-
-  in_dim: int = 36  # 16 noise + 4 mask + 16 encoded-image conditioning
-  num_channels_latents: int = 16  # VAE latent channels (== WanModel.out_dim)
+  in_channels: int = 36
+  out_channels: int = 16
   text_dim: int = 4096
-  hidden_size: int = 5120
+  freq_dim: int = 256
   ffn_dim: int = 13824
+  num_layers: int = 40
+  qk_norm: str = "rms_norm_across_heads"
+  eps: float = 1e-6
 
   # wan moe
   boundary_ratio: float | None = None
 
   def __post_init__(self):
     self.hidden_size = self.num_attention_heads * self.attention_head_dim
+    self.num_channels_latents = self.out_channels
 
 
 @dataclass

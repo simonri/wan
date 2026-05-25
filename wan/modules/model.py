@@ -16,7 +16,7 @@ from wan.layers.mrope import NDRotaryEmbedding
 from wan.layers.rotary_embedding.utils import apply_flashinfer_rope_qk_inplace
 from wan.layers.visual_embedding import ModulateProjection, PatchEmbed, TimestepEmbedder
 from wan.loader.utils import get_param_names_mapping
-from wan.platform import CudaPlatform, get_local_torch_device
+from wan.platform import CudaPlatform
 from wan.server_args import ServerArgs
 
 __all__ = ['WanModel']
@@ -36,7 +36,9 @@ class WanCrossAttention(nn.Module):
     self.norm_q = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
     self.norm_k = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    self.attn = USPAttention(num_heads=num_heads, head_size=self.head_dim, causal=False)
+    self.attn = USPAttention(
+      num_heads=num_heads, head_size=self.head_dim, dropout_rate=0, softmax_scale=None, causal=False
+    )
 
   def forward(self, x, context):
     q = self.norm_q(self.to_q(x)).unflatten(2, (self.num_heads, self.head_dim))
@@ -188,16 +190,20 @@ class WanModel(ModelMixin, ConfigMixin):
   ):
     super().__init__()
 
-    self.patch_size = config.arch_config.patch_size
-
     inner_dim = config.arch_config.num_attention_heads * config.arch_config.attention_head_dim
     self.hidden_size = config.arch_config.hidden_size
+    self.num_attention_heads = config.arch_config.num_attention_heads
+    self.in_channels = config.arch_config.in_channels
+    self.out_channels = config.arch_config.out_channels
+    self.num_channels_latents = config.arch_config.num_channels_latents
+
+    self.patch_size = config.arch_config.patch_size
 
     # since kernel_size = patch_size = stride, we can use PatchEmbed instead of nn.Conv3d
     self.patch_embedding = PatchEmbed(
-      in_chans=config.arch_config.in_dim,
+      in_chans=self.in_channels,
       embed_dim=inner_dim,
-      patch_size=config.arch_config.patch_size,
+      patch_size=self.patch_size,
       flatten=False,
     )
 
@@ -210,7 +216,7 @@ class WanModel(ModelMixin, ConfigMixin):
         WanTransformerBlock(
           dim=inner_dim,
           ffn_dim=config.arch_config.ffn_dim,
-          num_heads=config.arch_config.num_attention_heads,
+          num_heads=self.num_attention_heads,
           qk_norm=config.arch_config.qk_norm,
           eps=config.arch_config.eps,
         )

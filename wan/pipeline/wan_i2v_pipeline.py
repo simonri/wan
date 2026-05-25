@@ -72,7 +72,7 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
     with set_default_torch_dtype(transformer_dtype), skip_init_modules():
       transformer = WanModel(config=pipeline_config.dit_config).to(local_torch_device)
     print(f"  Transformer construct+to(device): {time.perf_counter() - t0:.2f}s")
-    transformer.load("models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors", server_args)
+    transformer.load("models/diffusion_models/wan2.2_i2v_A14b_high_noise_lightx2v_4step_720p_260412_fp16.safetensors", server_args)
 
     t0 = time.perf_counter()
     with set_default_torch_dtype(transformer_dtype), skip_init_modules():

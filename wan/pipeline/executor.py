@@ -1,6 +1,8 @@
+import contextlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+from wan.profiler import DiffusionProfiler
 from wan.server_args import ServerArgs
 from wan.stages.base import PipelineStage
 from wan.stages.schedule_batch import OutputBatch, Req
@@ -17,6 +19,24 @@ class BaseExecutor(ABC):
 
 class SyncExecutor(BaseExecutor):
   """Synchronously execute a list of pipeline stages."""
+
+  @contextlib.contextmanager
+  def profile_execution(self, batch: Req):
+    do_profile = batch.profile
+    full_profile = batch.profile_all_stages
+    if not do_profile:
+      yield
+      return
+
+    profiler = DiffusionProfiler(
+      full_profile=full_profile,
+      num_steps=batch.num_profiled_timesteps,
+      num_inference_steps=batch.num_inference_steps,
+    )
+    try:
+      yield
+    finally:
+      profiler.stop()
 
   def _run_all_stages(
     self,
@@ -36,13 +56,22 @@ class SyncExecutor(BaseExecutor):
     batch: Req,
     server_args: ServerArgs,
   ) -> OutputBatch:
-    return self._run_all_stages(
-      stages, batch, server_args, lambda stage, payload, server_args: stage(payload, server_args)
-    )
+    with self.profile_execution(batch):
+      batch = self._run_all_stages(
+        stages, batch, server_args, lambda stage, payload, server_args: stage(payload, server_args)
+      )
+
+    return batch
 
   def execute_group(
     self, stages: list[PipelineStage], batches: list[Req], server_args: ServerArgs
   ) -> list[OutputBatch]:
-    return self._run_all_stages(
-      stages, batches, server_args, lambda stage, batches, server_args: stage.run_grouped_requests(batches, server_args)
-    )
+    with self.profile_execution(batches[0]):
+      batches = self._run_all_stages(
+        stages,
+        batches,
+        server_args,
+        lambda stage, batches, server_args: stage.run_grouped_requests(batches, server_args),
+      )
+
+    return batches

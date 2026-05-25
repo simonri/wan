@@ -17,10 +17,7 @@ from wan.stages.schedule_batch import Req
 @dataclass(frozen=True)
 class TextEncodingFingerprint:
   prompt: Any
-  negative_prompt: Any
-  do_classifier_free_guidance: bool
   prompt_template: Any
-  max_sequence_length: int | None
 
 
 class LazyTextEncoder:
@@ -37,6 +34,14 @@ class LazyTextEncoder:
 
 
 class TextEncodingStage(PipelineStage):
+  deduplicated_output_fields = (
+    "prompt_embeds",
+    "prompt_attention_mask",
+    "prompt_embeds_mask",
+    "prompt_seq_lens",
+    "pooled_embeds",
+  )
+
   def __init__(self, text_encoder: LazyTextEncoder, tokenizer: AutoTokenizer):
     super().__init__()
     self.tokenizer = tokenizer
@@ -45,9 +50,6 @@ class TextEncodingStage(PipelineStage):
   @torch.no_grad()
   def forward(self, batch: Req, server_args: ServerArgs):
     batch.prompt_embeds = self.encode_text(batch.prompt, server_args)
-
-    if batch.do_classifier_free_guidance:
-      raise NotImplementedError("Classifier-free guidance is not implemented yet")
 
     return batch
 
@@ -105,8 +107,5 @@ class TextEncodingStage(PipelineStage):
   def build_dedup_fingerprint(self, batch: Req, server_args: ServerArgs) -> TextEncodingFingerprint:
     return TextEncodingFingerprint(
       prompt=self.freeze_for_dedup(batch.prompt),
-      negative_prompt=self.freeze_for_dedup(batch.negative_prompt),
-      do_classifier_free_guidance=bool(batch.do_classifier_free_guidance),
       prompt_template=self.freeze_for_dedup(batch.prompt_template),
-      max_sequence_length=batch.max_sequence_length,
     )
