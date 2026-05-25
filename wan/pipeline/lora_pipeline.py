@@ -125,7 +125,6 @@ class LoRAPipeline(PipelineBase):
     lora_paths: list[str | None],
     strengths: list[float],
     clear_existing: bool = False,
-    merge_weights: bool = True,
   ):
     """
     Apply LoRA weights to the given lora_layers.
@@ -162,7 +161,6 @@ class LoRAPipeline(PipelineBase):
             self.lora_adapters[nickname][lora_B_name],
             lora_path=path,
             strength=lora_strength,
-            merge_weights=merge_weights,
             clear_existing=(clear_existing and idx == 0),  # Only clear on first LoRA
           )
           adapted_count += 1
@@ -278,7 +276,6 @@ class LoRAPipeline(PipelineBase):
           tgt_paths,
           tgt_strengths,
           clear_existing=True,
-          merge_weights=True,
         )
         # TODO: we need to handle strength change here
         adapted_count += count

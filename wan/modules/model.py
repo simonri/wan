@@ -8,7 +8,7 @@ from diffusers.models.modeling_utils import ModelMixin
 from safetensors.torch import load_file as safetensors_load_file
 
 from wan.configs.models.dits.wan import WanConfig
-from wan.layers.attention.layer import USPAttention
+from wan.layers.attention.layer import WanAttention
 from wan.layers.elementwise import MulAdd
 from wan.layers.layernorm import LayerNormScaleShift, RMSNorm, ScaleResidualLayerNormScaleShift
 from wan.layers.mlp import MLP
@@ -36,7 +36,7 @@ class WanCrossAttention(nn.Module):
     self.norm_q = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
     self.norm_k = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    self.attn = USPAttention(
+    self.attn = WanAttention(
       num_heads=num_heads, head_size=self.head_dim, dropout_rate=0, softmax_scale=None, causal=False
     )
 
@@ -71,7 +71,7 @@ class WanTransformerBlock(nn.Module):
     self.to_k = nn.Linear(dim, dim, bias=True)
     self.to_v = nn.Linear(dim, dim, bias=True)
     self.to_out = nn.Linear(dim, dim, bias=True)
-    self.attn1 = USPAttention(num_heads=num_heads, head_size=self.head_dim, causal=False)
+    self.attn1 = WanAttention(num_heads=num_heads, head_size=self.head_dim, causal=False)
     self.norm_q = RMSNorm(dim, eps=eps)
     self.norm_k = RMSNorm(dim, eps=eps)
     self.self_attn_residual_norm = ScaleResidualLayerNormScaleShift(

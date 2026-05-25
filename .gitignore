@@ -13,3 +13,4 @@ traces/
 cache
 examples
 .torchinductor/
+logs

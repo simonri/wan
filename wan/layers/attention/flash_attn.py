@@ -1,9 +1,6 @@
-from dataclasses import dataclass
-
 import torch
 
 from wan.kernels.flash_attention import flash_attn_varlen_func
-from wan.layers.attention.attention_backend import AttentionBackend, AttentionImpl
 from wan.utils.custom_op import register_custom_op
 
 
@@ -248,73 +245,3 @@ def flash_attn_varlen_func_op_lse(
   )
 
 
-@dataclass
-class FlashAttentionMetadata:
-  max_seqlen_q: int = 1
-  max_seqlen_k: int = 0
-  cu_seqlens_q: torch.Tensor = None
-  cu_seqlens_k: torch.Tensor = None
-
-
-class FlashAttentionBackend(AttentionBackend):
-  @staticmethod
-  def get_impl_cls() -> type["FlashAttentionImpl"]:
-    return FlashAttentionImpl
-
-
-class FlashAttentionImpl(AttentionImpl):
-  def __init__(
-    self,
-    num_heads: int,
-    head_size: int,
-    causal: bool,
-    softmax_scale: float,
-    num_kv_heads: int | None = None,
-    **extra_impl_args,
-  ) -> None:
-    self.num_heads = num_heads
-    self.num_kv_heads = num_kv_heads
-    self.head_size = head_size
-    self.causal = causal
-    self.softmax_scale = softmax_scale
-    self.attention_metadata = FlashAttentionMetadata()
-
-  def forward(
-    self,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attn_metadata: FlashAttentionMetadata,
-    *,
-    return_softmax_lse: bool = False,
-  ):
-    max_seqlen_q = query.shape[1]
-    max_seqlen_k = key.shape[1]
-
-    if return_softmax_lse:
-      out_tensor, softmax_lse = flash_attn_varlen_func_op_lse(
-        q=query,
-        k=key,
-        v=value,
-        cu_seqlens_q=None,
-        cu_seqlens_k=None,
-        max_seqlen_q=max_seqlen_q,
-        max_seqlen_k=max_seqlen_k,
-        softmax_scale=self.softmax_scale,
-        causal=self.causal,
-        return_softmax_lse=True,
-      )
-      return out_tensor, softmax_lse
-    out_tensor = flash_attn_varlen_func_op(
-      q=query,
-      k=key,
-      v=value,
-      cu_seqlens_q=None,
-      cu_seqlens_k=None,
-      max_seqlen_q=max_seqlen_q,
-      max_seqlen_k=max_seqlen_k,
-      softmax_scale=self.softmax_scale,
-      causal=self.causal,
-      return_softmax_lse=False,
-    )
-    return out_tensor

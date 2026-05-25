@@ -1,11 +1,10 @@
 import torch
 from torch import nn
 
-from wan.layers.attention.attention_backend import AttentionImpl
-from wan.layers.attention.flash_attn import FlashAttentionBackend
+from wan.layers.attention.flash_attn import flash_attn_varlen_func_op
 
 
-class USPAttention(nn.Module):
+class WanAttention(nn.Module):
   def __init__(
     self,
     num_heads: int,
@@ -16,22 +15,10 @@ class USPAttention(nn.Module):
     dropout_rate: float = 0.0,
   ) -> None:
     super().__init__()
-
-    dtype = torch.get_default_dtype()
-    attn_backend = FlashAttentionBackend()
-
-    impl_cls: type[AttentionImpl] = attn_backend.get_impl_cls()
-    self.attn_impl = impl_cls(
-      num_heads=num_heads,
-      head_size=head_size,
-      causal=causal,
-      softmax_scale=softmax_scale,
-      num_kv_heads=num_kv_heads,
-    )
     self.num_heads = num_heads
     self.head_size = head_size
     self.num_kv_heads = num_kv_heads
-    self.dtype = dtype
+    self.softmax_scale = softmax_scale
     self.causal = causal
     self.dropout_p = dropout_rate
 
@@ -42,6 +29,15 @@ class USPAttention(nn.Module):
     v: torch.Tensor,
     attn_mask: torch.Tensor | None = None,
   ) -> torch.Tensor:
-    ctx_attn_metadata = None
-    out = self.attn_impl.forward(q, k, v, ctx_attn_metadata)
-    return out
+    return flash_attn_varlen_func_op(
+      q=q,
+      k=k,
+      v=v,
+      cu_seqlens_q=None,
+      cu_seqlens_k=None,
+      max_seqlen_q=q.shape[1],
+      max_seqlen_k=k.shape[1],
+      softmax_scale=self.softmax_scale,
+      causal=self.causal,
+      return_softmax_lse=False,
+    )

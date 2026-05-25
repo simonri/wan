@@ -3,8 +3,6 @@ import torch.nn as nn
 
 from wan.platform import get_local_torch_device
 
-torch._dynamo.config.recompile_limit = 64
-
 LORA_MERGE_CHUNK_BYTES = 32 * 1024 * 1024
 LoRAWeightEntry = tuple[
   torch.nn.Parameter,
@@ -35,10 +33,6 @@ class BaseLayerWithLoRA(nn.Module):
     self.lora_rank = lora_rank
     self.lora_alpha = lora_alpha
     self.lora_weights_list: list[LoRAWeightEntry] = []
-    self.strength: float = 1.0
-
-    self.lora_A = None
-    self.lora_B = None
 
   def _ensure_cpu_weight_snapshot(self) -> None:
     if self.cpu_weight is None:
@@ -51,27 +45,6 @@ class BaseLayerWithLoRA(nn.Module):
   @property
   def bias(self) -> torch.Tensor:
     return self.base_layer.bias
-
-  @torch.compile()
-  def forward(self, x: torch.Tensor) -> torch.Tensor:
-    lora_A = self.lora_A
-    lora_B = self.lora_B
-
-    if not self.merged and not self.disable_lora:
-      lora_dtype = lora_A.dtype
-      x_lora = x.to(dtype=lora_dtype)
-      lora_A_sliced = self.slice_lora_a_weights(lora_A.to(device=x.device, non_blocking=True))
-      lora_B_sliced = self.slice_lora_b_weights(lora_B.to(device=x.device, non_blocking=True))
-      delta = x_lora @ lora_A_sliced.T @ lora_B_sliced.T
-      if self.lora_alpha != self.lora_rank:
-        delta = delta * (self.lora_alpha / self.lora_rank)
-
-      delta = delta * self.strength
-      out, output_bias = self.base_layer(x)
-      return out + delta.to(dtype=out.dtype), output_bias
-    else:
-      out, output_bias = self.base_layer(x)
-      return out, output_bias
 
   def slice_lora_a_weights(self, A: torch.Tensor) -> torch.Tensor:
     return A
@@ -129,30 +102,14 @@ class BaseLayerWithLoRA(nn.Module):
         data_2d[start:end].add_(chunk_delta, alpha=scale)
 
   @torch.no_grad()
-  def merge_lora_weights(self, strength: float | None = None) -> None:
-    if strength is not None:
-      self.strength = strength
-
+  def merge_lora_weights(self) -> None:
     if self.disable_lora:
       return
 
     if self.merged:
       self.unmerge_lora_weights()
 
-    # Use lora_weights_list if available, otherwise fall back to single LoRA for backward compatibility
-    lora_list = self.lora_weights_list if self.lora_weights_list else []
-    if not lora_list and self.lora_A is not None and self.lora_B is not None:
-      lora_list = [
-        (
-          self.lora_A,
-          self.lora_B,
-          self.lora_path,
-          self.strength,
-          self.lora_rank,
-          self.lora_alpha,
-        )
-      ]
-
+    lora_list = self.lora_weights_list
     if not lora_list:
       raise ValueError("LoRA weights not set. Please set them first.")
 
@@ -198,17 +155,12 @@ class BaseLayerWithLoRA(nn.Module):
     lora_path: str | None = None,
     strength: float = 1.0,
     clear_existing: bool = False,
-    merge_weights: bool = True,
   ) -> None:
     lora_A_param = torch.nn.Parameter(A)
     lora_B_param = torch.nn.Parameter(B)
 
     if clear_existing:
       self.lora_weights_list.clear()
-      self.lora_A = None
-      self.lora_B = None
-      self.lora_path = None
-      self.strength = 1.0
 
     self.lora_weights_list.append(
       (
@@ -221,17 +173,8 @@ class BaseLayerWithLoRA(nn.Module):
       )
     )
 
-    self.lora_A = lora_A_param
-    self.lora_B = lora_B_param
-    self.lora_path = lora_path
-    self.strength = strength
-
     self.disable_lora = False
-
-    if merge_weights:
-      self.merge_lora_weights()
-    elif self.merged:
-      self.unmerge_lora_weights()
+    self.merge_lora_weights()
 
 
 class LinearWithLoRA(BaseLayerWithLoRA):
@@ -243,26 +186,10 @@ class LinearWithLoRA(BaseLayerWithLoRA):
   ) -> None:
     super().__init__(base_layer, lora_rank, lora_alpha)
 
-  @torch.compile()
   def forward(self, x: torch.Tensor) -> torch.Tensor:
-    lora_A = self.lora_A
-    lora_B = self.lora_B
-
-    if not self.merged and not self.disable_lora:
-      lora_dtype = lora_A.dtype
-      x_lora = x.to(dtype=lora_dtype)
-      lora_A_sliced = self.slice_lora_a_weights(lora_A.to(device=x.device, non_blocking=True))
-      lora_B_sliced = self.slice_lora_b_weights(lora_B.to(device=x.device, non_blocking=True))
-      delta = x_lora @ lora_A_sliced.T @ lora_B_sliced.T
-      if self.lora_alpha != self.lora_rank:
-        delta = delta * (self.lora_alpha / self.lora_rank)
-
-      delta = delta * self.strength
-      out = self.base_layer(x)
-      return out + delta.to(dtype=out.dtype)
-    else:
-      out = self.base_layer(x)
-      return out
+    # LoRA is always merged into base_layer.weight (or unmerged back to pristine
+    # on deactivate), so the forward is just the base linear.
+    return self.base_layer(x)
 
 
 def wrap_with_lora_layer(
