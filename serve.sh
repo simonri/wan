@@ -1,0 +1,1 @@
+uv run -m wan.runtime.launch_server
