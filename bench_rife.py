@@ -13,7 +13,6 @@ def parse_args():
   parser.add_argument(
     "--multiplier", type=int, default=2, help=">=2; produces multiplier-1 intermediate frames per pair."
   )
-  parser.add_argument("--ensemble", action=argparse.BooleanOptionalAction, default=True)
   parser.add_argument("--ckpt", type=str, default="rife49")
   parser.add_argument("--runs", type=int, default=20)
   parser.add_argument("--warmup", type=int, default=5)
@@ -28,26 +27,26 @@ def build_pair(h, w, device, seed=0):
   return img0, img1
 
 
-def run_pair(model, img0, img1, ensemble, multiplier):
+def run_pair(model, img0, img1, multiplier):
   """One pair's worth of work: (multiplier - 1) model calls."""
   with torch.no_grad():
     for j in range(1, multiplier):
-      _ = model(img0, img1, timestep=j / multiplier, scale_list=SCALE_LIST, ensemble=ensemble)
+      _ = model(img0, img1, timestep=j / multiplier, scale_list=SCALE_LIST)
 
 
-def warmup(model, img0, img1, ensemble, multiplier, runs):
+def warmup(model, img0, img1, multiplier, runs):
   for _ in range(runs):
-    run_pair(model, img0, img1, ensemble, multiplier)
+    run_pair(model, img0, img1, multiplier)
   torch.cuda.synchronize()
 
 
-def benchmark(model, img0, img1, ensemble, multiplier, runs):
+def benchmark(model, img0, img1, multiplier, runs):
   times = []
   for _ in range(runs):
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
-    run_pair(model, img0, img1, ensemble, multiplier)
+    run_pair(model, img0, img1, multiplier)
     end.record()
     torch.cuda.synchronize()
     times.append(start.elapsed_time(end) / 1000)
@@ -59,7 +58,6 @@ def print_stats(times, args):
   median = statistics.median(times)
   print(f"Resolution:   {args.height}x{args.width}")
   print(f"Multiplier:   {args.multiplier} ({intermediate_per_pair} intermediate frame(s) per pair)")
-  print(f"Ensemble:     {args.ensemble}")
   print(f"Runs:         {args.runs} (after {args.warmup} warmup)")
   print(f"Min:          {min(times) * 1000:.2f} ms / pair")
   print(f"Median:       {median * 1000:.2f} ms / pair")
@@ -76,8 +74,8 @@ def main():
   rife = RIFE(ckpt_name=args.ckpt, device=device)
   img0, img1 = build_pair(args.height, args.width, device)
 
-  warmup(rife.model, img0, img1, args.ensemble, args.multiplier, args.warmup)
-  times = benchmark(rife.model, img0, img1, args.ensemble, args.multiplier, args.runs)
+  warmup(rife.model, img0, img1, args.multiplier, args.warmup)
+  times = benchmark(rife.model, img0, img1, args.multiplier, args.runs)
   print_stats(times, args)
 
 

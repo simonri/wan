@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.routing import APIRouter
 
+from wan.entrypoints.video_api import router as video_router
 from wan.runtime.scheduler_client import async_scheduler_client
 from wan.server_args import ServerArgs
 
@@ -29,7 +30,10 @@ async def health():
 
 
 def create_app(server_args: ServerArgs):
-  app = FastAPI()
+  app = FastAPI(lifespan=lifespan)
+
+  app.include_router(health_router)
+  app.include_router(video_router)
 
   app.state.server_args = server_args
   return app

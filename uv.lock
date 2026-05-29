@@ -1173,6 +1173,14 @@ wheels = [
 ]
 
 [[package]]
+name = "python-multipart"
+version = "0.0.20"
+source = { registry = "https://download.pytorch.org/whl/nightly/cu128" }
+wheels = [
+    { url = "https://download.pytorch.org/whl/nightly/python_multipart-0.0.20-py3-none-any.whl", upload-time = "2025-09-17T04:05:31Z" },
+]
+
+[[package]]
 name = "pytokens"
 version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1510,6 +1518,7 @@ dependencies = [
     { name = "imageio-ffmpeg", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "opencv-python", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "python-multipart", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pyzmq", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "ruff", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "safetensors", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1554,6 +1563,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.23.5,<2" },
     { name = "opencv-python", specifier = ">=4.9.0.80" },
     { name = "pytest", marker = "extra == 'dev'" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "ruff", specifier = ">=0.15.12" },
     { name = "safetensors" },

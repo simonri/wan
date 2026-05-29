@@ -23,7 +23,15 @@ def launch_server(server_args: ServerArgs):
 
   scheduler_pipe_reader, scheduler_pipe_writer = mp.Pipe(duplex=False)
 
-  process = mp.Process(target=run_scheduler_process, args=server_args, name="worker", daemon=True)
+  process = mp.Process(
+    target=run_scheduler_process,
+    args=(
+      server_args,
+      scheduler_pipe_writer,
+    ),
+    name="worker",
+    daemon=True,
+  )
 
   process.start()
 

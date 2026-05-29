@@ -1,4 +1,5 @@
 import gc
+import multiprocessing as mp
 
 import torch
 
@@ -13,9 +14,10 @@ def _oom_exceptions():
   return tuple(types)
 
 
-def run_scheduler_process(server_args: ServerArgs) -> None:
+def run_scheduler_process(server_args: ServerArgs, pipe_writer: mp.connection.Connection) -> None:
   try:
     scheduler = Scheduler(server_args)
+    pipe_writer.send({"status": "ready"})
     scheduler.event_loop()
   except _oom_exceptions() as e:
     print(f"GPU OOM: {e}")
