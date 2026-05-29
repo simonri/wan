@@ -1,7 +1,17 @@
 import time
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+class LoRAItem(BaseModel):
+  """One LoRA to apply to the request. Matches the per-adapter args expected by
+  LoRAPipeline.set_lora (nickname, path, target transformer, strength)."""
+
+  nickname: str
+  path: str
+  target: Literal["transformer", "transformer_2", "all"] = "transformer"
+  strength: float = 1.0
 
 
 class VideoResponse(BaseModel):
@@ -43,17 +53,22 @@ class VideoGenerationsRequest(BaseModel):
   height: int | None = None
   num_inference_steps: int | None = None
   # Frame interpolation
-  enable_frame_interpolation: bool | False = False
-  frame_interpolation_exp: int | 1 = 1  # 1=2×, 2=4×
-  frame_interpolation_scale: float | 1.0 = 1.0
+  enable_frame_interpolation: bool = False
+  frame_interpolation_exp: int = 1  # 1=2×, 2=4×
+  frame_interpolation_scale: float = 1.0
   frame_interpolation_model_path: str | None = None
   # Upscaling
-  enable_upscaling: bool | False = False
+  enable_upscaling: bool = False
   upscaling_model_path: str | None = None
-  upscaling_scale: int | 4 = 4
+  upscaling_scale: int = 4
   output_quality: str = "default"
   output_compression: int | None = None
   output_path: str | None = None
   diffusers_kwargs: dict[str, Any] | None = None  # kwargs for diffusers backend
+  # LoRAs to apply on this request. Stacked in order onto their target transformer
+  # (matching LoRAPipeline.set_lora semantics: first LoRA per target clears, the
+  # rest add on top). The pipeline caches by nickname, so repeated requests with
+  # the same set hit a fast path that just re-applies merged weights.
+  loras: list[LoRAItem] | None = None
   # Performance profiling
   perf_dump_path: str | None = None

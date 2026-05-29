@@ -23,7 +23,7 @@ dependencies = [
     "accelerate>=1.1.1",
     "tqdm",
     "einops",
-    "imageio",
+    "imageio[pyav]",
     "easydict",
     "ftfy",
     "dashscope",

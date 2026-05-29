@@ -10,13 +10,15 @@ from wan.server_args import ServerArgs
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-  # 1. init the singleton client
+  # Bind the IPC sockets and spawn the async handle_loop that drains scheduler
+  # outputs into per-job waiters. We start the background task here (not in
+  # initialize()) because the asyncio loop only exists once the app is running.
   server_args = app.state.server_args
   async_scheduler_client.initialize(server_args)
+  async_scheduler_client.start_handle_loop()
 
   yield
 
-  # on shutdown
   print("FastAPI app is shutting down...")
   async_scheduler_client.close()
 
