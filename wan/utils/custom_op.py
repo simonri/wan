@@ -8,7 +8,7 @@ F = TypeVar("F", bound=Callable)
 
 
 @overload
-def register_custom_op[F: Callable](
+def register_custom_op(
   fn: F,
   *,
   op_name: str | None = None,
@@ -19,7 +19,7 @@ def register_custom_op[F: Callable](
 
 
 @overload
-def register_custom_op[F: Callable](
+def register_custom_op(
   fn: F,
   *,
   op_name: str | None = None,

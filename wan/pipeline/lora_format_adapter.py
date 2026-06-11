@@ -1,10 +1,10 @@
 from collections.abc import Mapping
-from enum import StrEnum
+from enum import Enum
 
 import torch
 
 
-class LoRAFormat(StrEnum):
+class LoRAFormat(str, Enum):
   STANDARD = "standard"  # diffusers/PEFT style: <path>.lora_A.weight / <path>.lora_B.weight
   WAN = "wan"  # original Wan: diffusion_model.<path>.lora_down.weight / .lora_up.weight
   KOHYA = "kohya"  # A1111/sd-scripts: lora_unet_<path-with-_>.lora_down.weight / .lora_up.weight
