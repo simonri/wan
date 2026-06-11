@@ -13,8 +13,8 @@ license = { file = "LICENSE.txt" }
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "torch>=2.4.0",
-    "torchvision>=0.19.0",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
     "opencv-python>=4.9.0.80",
     "diffusers>=0.31.0",
     "transformers>=4.49.0",
@@ -32,7 +32,8 @@ dependencies = [
     "flash_attn_3",
     "flashinfer-python",
     "ruff>=0.15.12",
-    "triton>=3.7.0",
+    "triton>=3.6.0",
+    "sglang-kernel",
     "flash-attn-4>=4.0.0b12",
     "fastapi>=0.116.2",
     "uvicorn>=0.35.0",
@@ -59,17 +60,24 @@ modelscope = "https://modelscope.cn/organization/Wan-AI"
 discord = "https://discord.gg/p5XbdQV7"
 
 [[tool.uv.index]]
-name = "pytorch-nightly-cu128"
-url = "https://download.pytorch.org/whl/nightly/cu128"
+name = "pytorch-stable-cu129"
+url = "https://download.pytorch.org/whl/cu129"
 
 [[tool.uv.index]]
 name = "flashinfer-nightly"
 url = "https://flashinfer.ai/whl/nightly/"
 explicit = true
 
+[[tool.uv.index]]
+name = "sglang-cu129"
+url = "https://docs.sglang.ai/whl/cu129/"
+explicit = true
+
 [tool.uv.sources]
-torch = { index = "pytorch-nightly-cu128" }
-torchvision = { index = "pytorch-nightly-cu128" }
+torch = { index = "pytorch-stable-cu129" }
+torchvision = { index = "pytorch-stable-cu129" }
+triton = { index = "pytorch-stable-cu129" }
+sglang-kernel = { index = "sglang-cu129" }
 flash_attn_3 = { url = "https://github.com/simonri/flash-attention-3-h100/releases/download/v1.0.0/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" }
 flashinfer-python = { index = "flashinfer-nightly" }
 
