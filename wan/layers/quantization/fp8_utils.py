@@ -9,6 +9,7 @@ def _process_scaled_mm_output(output, input_2d_shape, output_shape):
     output = output[0]
   return torch.narrow(output, 0, 0, input_2d_shape[0]).view(*output_shape)
 
+
 # Input scaling factors are no longer optional in _scaled_mm starting
 # from pytorch 2.5. Allocating a dummy tensor to pass as input_scale
 TORCH_DEVICE_IDENTITY = None
@@ -16,9 +17,9 @@ TORCH_DEVICE_IDENTITY = None
 
 def _apply_fallback_scaled_mm(
   qinput,
-  weight,
+  w,
   x_scale,
-  weight_scale,
+  w_scale,
   input_2d_shape,
   output_shape,
   bias,
@@ -26,11 +27,11 @@ def _apply_fallback_scaled_mm(
 ):
   global TORCH_DEVICE_IDENTITY
   if TORCH_DEVICE_IDENTITY is None:
-    TORCH_DEVICE_IDENTITY = torch.ones(1, dtype=torch.float32, device=weight.device)
+    TORCH_DEVICE_IDENTITY = torch.ones(1, dtype=torch.float32, device=w.device)
 
   output = torch._scaled_mm(
     qinput,
-    weight,
+    w,
     scale_a=TORCH_DEVICE_IDENTITY,
     scale_b=TORCH_DEVICE_IDENTITY,
     out_dtype=torch.float32,
@@ -39,7 +40,7 @@ def _apply_fallback_scaled_mm(
   output = _process_scaled_mm_output(output, input_2d_shape, output_shape)
   x_scale = torch.narrow(x_scale, 0, 0, input_2d_shape[0])
 
-  output = output * x_scale * weight_scale.t()
+  output = output * x_scale * w_scale.t()
   if bias is not None:
     output = output + bias
   return output.to(dtype=input_dtype)
@@ -49,29 +50,26 @@ def apply_fp8_linear(
   input: torch.Tensor,
   weight: torch.Tensor,
   weight_scale: torch.Tensor,
-  input_scale: torch.Tensor | None = None,
   bias: torch.Tensor | None = None,
 ) -> torch.Tensor:
   input_2d = input.view(-1, input.shape[-1])
-  output_shape = [*input.shape[:-1], weight.shape[1]]
+  # weight is [out, in] (nn.Linear convention)
+  # w = weight.T is [in, out] column-major — required by cuBLAS _scaled_mm
+  w = weight.T
+  output_shape = [*input.shape[:-1], weight.shape[0]]
 
-  if input_scale is not None:
-    assert input_scale.numel() == 1
+  qinput, x_scale = sglang_per_token_quant_fp8(input_2d)
 
-    qinput, x_scale = static_quant_fp8(input_2d, input_scale, repeat_scale=True)
-  else:
-    qinput, x_scale = sglang_per_token_quant_fp8(input_2d)
-
-  if weight_scale.numel() == weight.shape[1]:
+  if weight_scale.numel() == weight.shape[0]:
     cutlass_compatible_b = weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0
     if not cutlass_compatible_b:
       # Massage the input to be 2D
       qinput = qinput.view(-1, qinput.shape[-1])
-      output = triton_scaled_mm(qinput, weight, x_scale, weight_scale, input.dtype, bias)
+      output = triton_scaled_mm(qinput, w, x_scale, weight_scale, input.dtype, bias)
     else:
       output = fp8_scaled_mm(
         qinput,
-        weight,
+        w,
         x_scale,
         weight_scale,
         out_dtype=input.dtype,
@@ -92,7 +90,7 @@ def apply_fp8_linear(
       weight_scale = weight_scale.unsqueeze(0)
     output = torch._scaled_mm(
       qinput,
-      weight,
+      w,
       out_dtype=input.dtype,
       scale_a=x_scale,
       scale_b=weight_scale,
@@ -116,7 +114,7 @@ def apply_fp8_linear(
   # does not support s_w being a vector.
   return _apply_fallback_scaled_mm(
     qinput,
-    weight,
+    w,
     x_scale,
     weight_scale,
     input_2d.shape,
