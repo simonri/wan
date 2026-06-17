@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from sgl_kernel.elementwise import fused_add_rmsnorm, rmsnorm
+from wan.jit_kernel.elementwise import fused_add_rmsnorm, rmsnorm
 from wan.kernels.rmsnorm_onepass import triton_one_pass_rms_norm
 from wan.kernels.scale_shift import fuse_scale_shift_kernel_blc_opt as fuse_scale_shift_kernel
 from wan.layers.custom_op import CustomOp
@@ -141,7 +141,7 @@ class _ScaleResidualNormScaleShift(CustomOp):
       )
       return self.forward_native(residual, x, gate, shift, scale)
 
-    from sgl_kernel.scale_residual_norm_scale_shift import fused_scale_residual_norm_scale_shift
+    from wan.jit_kernel.scale_residual_norm_scale_shift import fused_scale_residual_norm_scale_shift
 
     if isinstance(gate, int) and gate != 1:
       raise ValueError(f"Only gate value of 1 is supported for int type, but got {gate}")
@@ -239,7 +239,7 @@ class _NormScaleShift(CustomOp):
       )
       return self.forward_native(x, shift, scale)
 
-    from sgl_kernel.scale_residual_norm_scale_shift import fused_norm_scale_shift
+    from wan.jit_kernel.scale_residual_norm_scale_shift import fused_norm_scale_shift
 
     return fused_norm_scale_shift(
       x.contiguous(),

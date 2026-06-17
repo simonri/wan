@@ -3,8 +3,8 @@ import cutlass
 import cutlass.cute as cute
 import torch
 
-from sgl_kernel.norm_fusion import apply_norm_cta, broadcast_tensor_for_bsfd, tensor_slice_for_bsfd
-from sgl_kernel.utils import TORCH_TO_CUTE_DTYPE, WARP_SIZE
+from wan.jit_kernel.norm_fusion import apply_norm_cta, broadcast_tensor_for_bsfd, tensor_slice_for_bsfd
+from wan.jit_kernel.utils import TORCH_TO_CUTE_DTYPE, WARP_SIZE
 
 _COMPILE_CACHE = {}
 

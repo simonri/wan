@@ -12,7 +12,7 @@ from wan.server_args import ServerArgs
 from wan.stages.schedule_batch import Req
 from wan.stages.text_encoding import TextEncodingStage
 
-CHECKPOINT_PATH = "models/text_encoders/models_t5_umt5-xxl-enc-bf16.pth"
+CHECKPOINT_PATH = "models/text_encoders/umt5-xxl-enc-bf16.safetensors"
 DTYPE = torch.bfloat16
 DEFAULT_PROMPT = "A cat playing piano in a cozy living room, cinematic lighting"
 

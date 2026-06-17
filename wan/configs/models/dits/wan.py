@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from wan.configs.models.dits.base import DiTArchConfig, DiTConfig
+from wan.layers.quantization.fp8 import Fp8Config
 
 
 @dataclass
@@ -76,3 +77,4 @@ class WanConfig(DiTConfig):
   """Wan I2V A14B full config (DiT arch + text encoder + VAE + sampler defaults)."""
 
   arch_config: WanArchConfig = field(default_factory=WanArchConfig)
+  quant_config: Fp8Config = field(default_factory=Fp8Config)

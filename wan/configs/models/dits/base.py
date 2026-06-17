@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from wan.configs.models.base import ArchConfig, ModelConfig
+from wan.layers.quantization.config.base_config import QuantizationConfig
 
 
 @dataclass
@@ -18,3 +19,4 @@ class DiTArchConfig(ArchConfig):
 @dataclass
 class DiTConfig(ModelConfig):
   arch_config: DiTArchConfig = field(default_factory=DiTArchConfig)
+  quant_config: QuantizationConfig | None = None

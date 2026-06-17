@@ -3,7 +3,7 @@ import cutlass.cute as cute
 import torch
 from einops import rearrange
 
-from sgl_kernel.reduce import cta_reduce_sum, warp_reduce_sum
+from wan.jit_kernel.reduce import cta_reduce_sum, warp_reduce_sum
 
 
 @cute.jit

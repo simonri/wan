@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from wan.layers.linear import Fp8Linear
 from wan.platform import get_local_torch_device
 
 LORA_MERGE_CHUNK_BYTES = 32 * 1024 * 1024
@@ -121,6 +122,9 @@ class BaseLayerWithLoRA(nn.Module):
     data = self._as_mutable_tensor(data)
     target_dtype = data.dtype
 
+    if data.is_floating_point() and data.dtype != torch.float32:
+      data = data.to(torch.float32)
+
     self._merge_lora_into_data(data, lora_list)
 
     self.base_layer.weight.data = self._as_mutable_tensor(
@@ -192,6 +196,39 @@ class LinearWithLoRA(BaseLayerWithLoRA):
     return self.base_layer(x)
 
 
+class Fp8LinearWithLoRA(BaseLayerWithLoRA):
+  def __init__(
+    self,
+    base_layer: Fp8Linear,
+    lora_rank: int | None = None,
+    lora_alpha: int | None = None,
+  ) -> None:
+    super().__init__(base_layer, lora_rank, lora_alpha)
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    if self.merged or self.disable_lora:
+      return self.base_layer(x)
+
+    lora_A = self.lora_A
+    lora_B = self.lora_B
+
+    bias = self.base_layer.bias
+    output = self.base_layer.quant_method.apply(self.base_layer, x, bias)
+
+    if not self.merged and not self.disable_lora:
+      lora_dtype = lora_A.dtype
+      input_lora = x.to(dtype=lora_dtype)
+
+      delta = input_lora @ lora_A.T @ lora_B.T
+      if self.lora_alpha != self.lora_rank:
+        delta = delta * (self.lora_alpha / self.lora_rank)
+
+      delta = delta * self.strength
+      output = output + delta.to(dtype=output.dtype)
+
+    return output
+
+
 def wrap_with_lora_layer(
   layer: nn.Module,
   lora_rank: int | None = None,
@@ -200,7 +237,10 @@ def wrap_with_lora_layer(
   """
   Transform the given layer to its corresponding LoRA layer.
   """
-  supported_layer_types: dict[type[nn.Linear]] = {nn.Linear: LinearWithLoRA}
+  supported_layer_types: dict = {
+    Fp8Linear: Fp8LinearWithLoRA,
+    nn.Linear: LinearWithLoRA,
+  }
 
   for src_layer_type, lora_layer_type in supported_layer_types.items():
     if isinstance(layer, src_layer_type):

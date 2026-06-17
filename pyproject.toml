@@ -83,6 +83,7 @@ flashinfer-python = { index = "flashinfer-nightly" }
 
 [tool.uv]
 prerelease = "allow"
+index-strategy = "unsafe-best-match"
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [tool.setuptools]

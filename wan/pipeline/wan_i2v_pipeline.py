@@ -48,7 +48,7 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
       with torch.device("meta"), set_default_torch_dtype(text_encoder_dtype):
         encoder = T5Encoder(config=pipeline_config.text_encoder_config)
       print(f"  T5 construct (meta): {time.perf_counter() - t0:.2f}s")
-      encoder.load("models/text_encoders/models_t5_umt5-xxl-enc-bf16.safetensors", server_args)
+      encoder.load("models/text_encoders/umt5-xxl-enc-bf16.safetensors", server_args)
       return encoder
 
     text_encoder = LazyTextEncoder(build_text_encoder)
@@ -70,15 +70,19 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
     transformer_dtype = PRECISION_TO_TYPE[pipeline_config.dit_precision]
     t0 = time.perf_counter()
     with set_default_torch_dtype(transformer_dtype), skip_init_modules():
-      transformer = WanModel(config=pipeline_config.dit_config).to(local_torch_device)
+      transformer = WanModel(
+        config=pipeline_config.dit_config, quant_config=pipeline_config.dit_config.quant_config
+      ).to(local_torch_device)
     print(f"  Transformer construct+to(device): {time.perf_counter() - t0:.2f}s")
-    transformer.load("models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors", server_args)
+    transformer.load("models/diffusion_models/Wan2_2-I2V-A14B-HIGH_fp8_e4m3fn_scaled_KJ.safetensors", server_args)
 
     t0 = time.perf_counter()
     with set_default_torch_dtype(transformer_dtype), skip_init_modules():
-      transformer_2 = WanModel(config=pipeline_config.dit_config).to(local_torch_device)
+      transformer_2 = WanModel(
+        config=pipeline_config.dit_config, quant_config=pipeline_config.dit_config.quant_config
+      ).to(local_torch_device)
     print(f"  Transformer_2 construct+to(device): {time.perf_counter() - t0:.2f}s")
-    transformer_2.load("models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors", server_args)
+    transformer_2.load("models/diffusion_models/Wan2_2-I2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.safetensors", server_args)
 
     print(f"== total load_modules: {time.perf_counter() - t_total:.2f}s ==")
 
