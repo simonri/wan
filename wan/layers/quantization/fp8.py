@@ -47,6 +47,5 @@ class Fp8LinearMethod(LinearMethodBase):
       input=x,
       weight=layer.weight,
       weight_scale=layer.weight_scale,
-      input_scale=getattr(layer, "input_scale", None),
       bias=bias,
     )
