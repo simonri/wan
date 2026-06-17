@@ -23,17 +23,16 @@ def apply_fp8_linear(
 
   qinput, x_scale = sglang_per_token_quant_fp8(input_2d)
 
-  # assume per tensor weights
-
-  # Fused GEMM_DQ; _scaled_mm with torch.compile requires len(weight_scale.shape) == len(x_scale.shape)
-  if weight_scale.ndim == 0 and x_scale.ndim == 1:
-    weight_scale = weight_scale.unsqueeze(0)
+  # x_scale is per-token: shape (M, 1). RowWise scaling requires scale_b to be
+  # (1, out_features) — broadcast the per-tensor scalar to that shape so the
+  # fused kernel handles dequantization without a separate pass.
+  ws = weight_scale.reshape(1, 1).expand(1, weight.shape[0]).contiguous()
   output = torch._scaled_mm(
     qinput,
     w,
     out_dtype=input.dtype,
     scale_a=x_scale,
-    scale_b=weight_scale,
+    scale_b=ws,
     bias=bias,
   )
   return _process_scaled_mm_output(output, input_2d.shape, output_shape)

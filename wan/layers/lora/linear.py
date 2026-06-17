@@ -204,29 +204,75 @@ class Fp8LinearWithLoRA(BaseLayerWithLoRA):
     lora_alpha: int | None = None,
   ) -> None:
     super().__init__(base_layer, lora_rank, lora_alpha)
+    self.cpu_weight_scale: torch.Tensor | None = None
+
+  def _ensure_cpu_weight_snapshot(self) -> None:
+    super()._ensure_cpu_weight_snapshot()
+    if self.cpu_weight_scale is None:
+      self.cpu_weight_scale = self.base_layer.weight_scale.detach().to("cpu").clone()
+
+  @torch.no_grad()
+  def merge_lora_weights(self) -> None:
+    if self.disable_lora:
+      return
+
+    if self.merged:
+      self.unmerge_lora_weights()
+
+    lora_list = self.lora_weights_list
+    if not lora_list:
+      raise ValueError("LoRA weights not set. Please set them first.")
+
+    self._ensure_cpu_weight_snapshot()
+
+    device = get_local_torch_device()
+    current_device = self.base_layer.weight.data.device
+
+    # Dequantize: actual weight = fp8_values * scale
+    scale = self.base_layer.weight_scale.data.to(device)
+    fp32_weight = self._as_mutable_tensor(self.base_layer.weight.data.to(device).to(torch.float32)) * scale
+
+    # Apply LoRA delta in float32
+    self._merge_lora_into_data(fp32_weight, lora_list)
+
+    # Re-quantize: derive new scale from the merged weight.
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    new_scale = (fp32_weight.abs().amax() / fp8_max).reshape_as(scale)
+    new_fp8_weight = (fp32_weight / new_scale).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
+
+    self.base_layer.weight.data = self._as_mutable_tensor(new_fp8_weight.to(current_device, non_blocking=True))
+    self.base_layer.weight_scale.data = self._as_mutable_tensor(new_scale.to(current_device, non_blocking=True))
+    self.merged = True
+
+  @torch.no_grad()
+  def unmerge_lora_weights(self) -> None:
+    if self.disable_lora:
+      return
+    if not self.merged:
+      raise ValueError("LoRA weights are not merged. Please merge them first.")
+
+    current_device = self.base_layer.weight.data.device
+
+    cpu_weight_on_device = self.cpu_weight.to(current_device, non_blocking=True)
+    if self.base_layer.weight.data.is_inference():
+      self.base_layer.weight.data = self._as_mutable_tensor(cpu_weight_on_device)
+    else:
+      self.base_layer.weight.data.copy_(cpu_weight_on_device)
+    if cpu_weight_on_device.data_ptr() != self.base_layer.weight.data.data_ptr():
+      del cpu_weight_on_device
+
+    cpu_scale_on_device = self.cpu_weight_scale.to(current_device, non_blocking=True)
+    if self.base_layer.weight_scale.data.is_inference():
+      self.base_layer.weight_scale.data = self._as_mutable_tensor(cpu_scale_on_device)
+    else:
+      self.base_layer.weight_scale.data.copy_(cpu_scale_on_device)
+    if cpu_scale_on_device.data_ptr() != self.base_layer.weight_scale.data.data_ptr():
+      del cpu_scale_on_device
+
+    self.merged = False
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
-    if self.merged or self.disable_lora:
-      return self.base_layer(x)
-
-    lora_A = self.lora_A
-    lora_B = self.lora_B
-
-    bias = self.base_layer.bias
-    output = self.base_layer.quant_method.apply(self.base_layer, x, bias)
-
-    if not self.merged and not self.disable_lora:
-      lora_dtype = lora_A.dtype
-      input_lora = x.to(dtype=lora_dtype)
-
-      delta = input_lora @ lora_A.T @ lora_B.T
-      if self.lora_alpha != self.lora_rank:
-        delta = delta * (self.lora_alpha / self.lora_rank)
-
-      delta = delta * self.strength
-      output = output + delta.to(dtype=output.dtype)
-
-    return output
+    return self.base_layer(x)
 
 
 def wrap_with_lora_layer(
