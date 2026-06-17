@@ -6,12 +6,6 @@ from wan.layers.quantization.fp8_utils import apply_fp8_linear
 
 
 class Fp8Config(QuantizationConfig):
-  def __init__(
-    self,
-    packed_modules_mapping: dict[str, list[str]] | None = None,
-  ):
-    self.packed_modules_mapping = packed_modules_mapping or {}
-
   def get_quant_method(self, layer: torch.nn.Module):
     from wan.layers.linear import LinearBase
 

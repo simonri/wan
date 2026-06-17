@@ -74,7 +74,7 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
         config=pipeline_config.dit_config, quant_config=pipeline_config.dit_config.quant_config
       ).to(local_torch_device)
     print(f"  Transformer construct+to(device): {time.perf_counter() - t0:.2f}s")
-    transformer.load("models/diffusion_models/Wan2_2-I2V-A14B-HIGH_fp8_e4m3fn_scaled_KJ.safetensors", server_args)
+    transformer.load("models/diffusion_models/Wan2_2-I2V-A14B-HIGH_fp8_e4m3fn_scaled_KJ.flashpack", server_args)
 
     t0 = time.perf_counter()
     with set_default_torch_dtype(transformer_dtype), skip_init_modules():
@@ -82,7 +82,7 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
         config=pipeline_config.dit_config, quant_config=pipeline_config.dit_config.quant_config
       ).to(local_torch_device)
     print(f"  Transformer_2 construct+to(device): {time.perf_counter() - t0:.2f}s")
-    transformer_2.load("models/diffusion_models/Wan2_2-I2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.safetensors", server_args)
+    transformer_2.load("models/diffusion_models/Wan2_2-I2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.flashpack", server_args)
 
     print(f"== total load_modules: {time.perf_counter() - t_total:.2f}s ==")
 

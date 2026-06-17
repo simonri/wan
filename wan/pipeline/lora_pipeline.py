@@ -101,20 +101,26 @@ class LoRAPipeline(PipelineBase):
     lora_param_names_mapping_fn = get_param_names_mapping(config.lora_param_names_mapping)
 
     t1 = time.perf_counter()
+    renamed: list[tuple[str, torch.Tensor]] = []
     for name, weight in lora_state_dict.items():
       name = name.removesuffix(".weight")
       name, _, _ = lora_param_names_mapping_fn(name)
-
       if name in self.lora_adapters[lora_nickname]:
         raise ValueError(f"Key {name} already exists in lora_adapters for {lora_nickname}!")
+      renamed.append((name, weight))
+    t_rename = time.perf_counter() - t1
 
-      self.lora_adapters[lora_nickname][name] = weight.to(self.device)
-    t_to_device = time.perf_counter() - t1
+    # Fire all host→device transfers without waiting for each one, then sync once.
+    t2 = time.perf_counter()
+    for name, weight in renamed:
+      self.lora_adapters[lora_nickname][name] = weight.to(self.device, non_blocking=True)
+    torch.cuda.synchronize()
+    t_to_device = time.perf_counter() - t2
 
     self.loaded_adapter_paths[lora_nickname] = lora_path
     print(
       f"Loaded LoRA adapter {lora_path}: "
-      f"read+normalize={t_read:.2f}s  rename+to_device={t_to_device:.2f}s  "
+      f"read+normalize={t_read:.2f}s  rename={t_rename:.3f}s  to_device={t_to_device:.2f}s  "
       f"total={time.perf_counter() - t_total:.2f}s"
     )
 

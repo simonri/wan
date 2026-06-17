@@ -39,6 +39,7 @@ dependencies = [
     "uvicorn>=0.35.0",
     "pyzmq>=27.1.0",
     "python-multipart>=0.0.20",
+    "flashpack>=0.2.2",
 ]
 
 [project.optional-dependencies]

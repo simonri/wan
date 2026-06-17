@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin
 from diffusers.models.modeling_utils import ModelMixin
-from safetensors.torch import load_file as safetensors_load_file
 
 from wan.configs.models.dits.wan import WanConfig
 from wan.layers.attention.layer import WanAttention
@@ -357,28 +356,40 @@ class WanModel(ModelMixin, ConfigMixin):
     gpu_mem_before_loading = CudaPlatform.get_available_gpu_memory()
     print(f"Loading Transformer from {model_path}. avail mem: {gpu_mem_before_loading:.2f} GB")
 
-    t0 = time.perf_counter()
-    state_dict = safetensors_load_file(model_path)
-    t_read = time.perf_counter() - t0
+    if model_path.endswith(".flashpack"):
+      import flashpack
 
-    t1 = time.perf_counter()
-    arch = server_args.pipeline_config.dit_config.arch_config
-    mapping_fn = get_param_names_mapping(arch.param_names_mapping)
-    state_dict = {mapping_fn(k)[0]: v for k, v in state_dict.items()}
-    t_rename = time.perf_counter() - t1
+      t0 = time.perf_counter()
+      state_dict = flashpack.assign_from_file(self, model_path)
+      t_read = time.perf_counter() - t0
 
-    t2 = time.perf_counter()
-    state_dict = self._convert_quants(state_dict)
-    t_convert = time.perf_counter() - t2
+      print(f"  Transformer load: read={t_read:.2f}s")
+    else:
+      from safetensors.torch import load_file as safetensors_load_file
 
-    t3 = time.perf_counter()
-    self.load_state_dict(state_dict, strict=True)
-    torch.cuda.synchronize()
-    t_copy = time.perf_counter() - t3
+      t0 = time.perf_counter()
+      state_dict = safetensors_load_file(model_path)
+      t_read = time.perf_counter() - t0
+
+      t1 = time.perf_counter()
+      arch = server_args.pipeline_config.dit_config.arch_config
+      mapping_fn = get_param_names_mapping(arch.param_names_mapping)
+      state_dict = {mapping_fn(k)[0]: v for k, v in state_dict.items()}
+      t_rename = time.perf_counter() - t1
+
+      t2 = time.perf_counter()
+      state_dict = self._convert_quants(state_dict)
+      t_convert = time.perf_counter() - t2
+
+      t3 = time.perf_counter()
+      self.load_state_dict(state_dict, strict=True)
+      torch.cuda.synchronize()
+      t_copy = time.perf_counter() - t3
+
+      print(
+        f"  Transformer load: read={t_read:.2f}s  rename={t_rename:.2f}s  "
+        f"convert={t_convert:.2f}s  load_state_dict={t_copy:.2f}s  "
+        f"total={(t_read + t_rename + t_convert + t_copy):.2f}s"
+      )
 
     self.eval().requires_grad_(False)
-    print(
-      f"  Transformer load: read={t_read:.2f}s  rename={t_rename:.2f}s  "
-      f"convert={t_convert:.2f}s  load_state_dict={t_copy:.2f}s  "
-      f"total={(t_read + t_rename + t_convert + t_copy):.2f}s"
-    )

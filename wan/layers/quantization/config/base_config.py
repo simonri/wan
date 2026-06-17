@@ -16,7 +16,6 @@ class QuantizeMethodBase(ABC):
 class QuantizationConfig(ABC):
   def __init__(self):
     super().__init__()
-    self.packed_modules_mapping: dict[str, list[str]] = dict()
 
   @abstractmethod
   def get_quant_method(self, layer: torch.nn.Module) -> QuantizeMethodBase | None:
