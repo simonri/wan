@@ -21,8 +21,6 @@ class LoRAPipeline(PipelineBase):
   lora_rank: int | None
   lora_alpha: int | None
   lora_initialized: bool
-  # Track merge status per module
-  is_lora_merged: dict[str, bool]
 
   def __init__(self, *args, **kwargs) -> None:
     super().__init__(*args, **kwargs)
@@ -32,7 +30,6 @@ class LoRAPipeline(PipelineBase):
 
     self.lora_layers = {}
     self.lora_layers_transformer_2 = {}
-    self.is_lora_merged = {}
     self.lora_rank = None
     self.lora_alpha = None
     self.lora_initialized = False
@@ -101,26 +98,20 @@ class LoRAPipeline(PipelineBase):
     lora_param_names_mapping_fn = get_param_names_mapping(config.lora_param_names_mapping)
 
     t1 = time.perf_counter()
-    renamed: list[tuple[str, torch.Tensor]] = []
+
     for name, weight in lora_state_dict.items():
       name = name.removesuffix(".weight")
       name, _, _ = lora_param_names_mapping_fn(name)
+
       if name in self.lora_adapters[lora_nickname]:
         raise ValueError(f"Key {name} already exists in lora_adapters for {lora_nickname}!")
-      renamed.append((name, weight))
-    t_rename = time.perf_counter() - t1
-
-    # Fire all host→device transfers without waiting for each one, then sync once.
-    t2 = time.perf_counter()
-    for name, weight in renamed:
-      self.lora_adapters[lora_nickname][name] = weight.to(self.device, non_blocking=True)
-    torch.cuda.synchronize()
-    t_to_device = time.perf_counter() - t2
+      self.lora_adapters[lora_nickname][name] = weight.to(self.device)
+    t_to_device = time.perf_counter() - t1
 
     self.loaded_adapter_paths[lora_nickname] = lora_path
     print(
       f"Loaded LoRA adapter {lora_path}: "
-      f"read+normalize={t_read:.2f}s  rename={t_rename:.3f}s  to_device={t_to_device:.2f}s  "
+      f"read+normalize={t_read:.2f}s  to_device={t_to_device:.2f}s  "
       f"total={time.perf_counter() - t_total:.2f}s"
     )
 
@@ -285,17 +276,14 @@ class LoRAPipeline(PipelineBase):
         )
         # TODO: we need to handle strength change here
         adapted_count += count
-        self.is_lora_merged[module_name] = True
 
     print(f"== total set_lora: {time.perf_counter() - t_set_lora:.2f}s ==")
 
   def deactivate_lora_weights(self, target: str = "all") -> None:
-    """Return the target transformer(s) to their pristine base weights.
+    """Deactivate LoRA for the target transformer(s).
 
-    Unmerges any baked-in LoRA (restoring the CPU snapshot taken at first merge)
-    and disables the dynamic path, so the forward runs the raw checkpoint with no
-    LoRA applied. Handles both merged and dynamic layers and reuses the snapshot,
-    so it costs about as much as a swap (~1s/transformer), not a fresh merge.
+    Clears the active flag on each layer and disables the bypass path, so the
+    forward runs the raw FP8 weights with no LoRA correction applied.
     """
     target_modules, error = self._get_target_lora_layers(target)
     if error:
@@ -303,20 +291,14 @@ class LoRAPipeline(PipelineBase):
     if not target_modules:
       return
 
-    modules_requiring_unmerge = []
-    for module_name, lora_layers_dict in target_modules:
-      if self.is_lora_merged.get(module_name, False) or any(layer.merged for layer in lora_layers_dict.values()):
-        modules_requiring_unmerge.append((module_name, lora_layers_dict))
-
     t = time.perf_counter()
     for module_name, lora_layers_dict in target_modules:
       for layer in lora_layers_dict.values():
         if layer.merged:
-          layer.unmerge_lora_weights()  # restore pristine base from the CPU snapshot
+          layer.unmerge_lora_weights()
         if not layer.disable_lora:
-          layer.disable_lora = True  # force the base-only branch in forward
+          layer.disable_lora = True
 
-      self.is_lora_merged[module_name] = False
       print(f"LoRA weights deactivated for module {module_name}")
 
     print(f"== total deactivate_lora_weights({target}): {time.perf_counter() - t:.2f}s ==")

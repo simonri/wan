@@ -18,15 +18,18 @@ def detect_lora_format(state_dict: Mapping[str, torch.Tensor]) -> LoRAFormat:
   if not keys:
     return LoRAFormat.STANDARD
 
+  # WAN format is identified by the diffusion_model. prefix regardless of
+  # whether the file uses lora_A/lora_B or lora_down/lora_up naming — check
+  # this before the lora_A presence test, which would otherwise short-circuit.
+  if any(k.startswith("diffusion_model.") for k in keys):
+    return LoRAFormat.WAN
+
   if any(".lora_A." in k or ".lora_B." in k for k in keys):
     return LoRAFormat.STANDARD
 
   # majority-rule so a stray metadata key doesn't disqualify a file
   if sum(k.startswith(KOHYA_PREFIXES) for k in keys) > len(keys) // 2:
     return LoRAFormat.KOHYA
-
-  if any(k.startswith("diffusion_model.") for k in keys):
-    return LoRAFormat.WAN
 
   return LoRAFormat.STANDARD
 

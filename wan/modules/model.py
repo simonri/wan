@@ -377,9 +377,12 @@ class WanModel(ModelMixin, ConfigMixin):
       state_dict = {mapping_fn(k)[0]: v for k, v in state_dict.items()}
       t_rename = time.perf_counter() - t1
 
-      t2 = time.perf_counter()
-      state_dict = self._convert_quants(state_dict)
-      t_convert = time.perf_counter() - t2
+      quant_config = server_args.pipeline_config.dit_config.quant_config
+
+      if quant_config is not None:
+        t2 = time.perf_counter()
+        state_dict = self._convert_quants(state_dict)
+        t_convert = time.perf_counter() - t2
 
       t3 = time.perf_counter()
       self.load_state_dict(state_dict, strict=True)
