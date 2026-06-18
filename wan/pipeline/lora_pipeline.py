@@ -18,8 +18,6 @@ class LoRAPipeline(PipelineBase):
   loaded_adapter_paths: dict[str, str]  # nickname -> lora_path
   lora_layers: dict[str, Any]
   lora_layers_transformer_2: dict[str, Any]
-  lora_rank: int | None
-  lora_alpha: int | None
   lora_initialized: bool
 
   def __init__(self, *args, **kwargs) -> None:
@@ -30,8 +28,6 @@ class LoRAPipeline(PipelineBase):
 
     self.lora_layers = {}
     self.lora_layers_transformer_2 = {}
-    self.lora_rank = None
-    self.lora_alpha = None
     self.lora_initialized = False
 
     self.device = get_local_torch_device()
@@ -42,11 +38,7 @@ class LoRAPipeline(PipelineBase):
   ) -> int:
     converted_count = 0
     for name, layer in module.named_modules():
-      lora_layer = wrap_with_lora_layer(
-        layer,
-        lora_rank=self.lora_rank,
-        lora_alpha=self.lora_alpha,
-      )
+      lora_layer = wrap_with_lora_layer(layer, name)
       if lora_layer is not None:
         target_lora_layers[name] = lora_layer
         replace_submodule(self.modules[module_name], name, lora_layer)
@@ -150,15 +142,14 @@ class LoRAPipeline(PipelineBase):
           else:
             inferred_alpha = inferred_rank
 
-          layer.lora_rank = inferred_rank
-          layer.lora_alpha = inferred_alpha
-
           layer.set_lora_weights(
             self.lora_adapters[nickname][lora_A_name],
             self.lora_adapters[nickname][lora_B_name],
             lora_path=path,
             strength=lora_strength,
             clear_existing=(clear_existing and idx == 0),  # Only clear on first LoRA
+            lora_rank=inferred_rank,
+            lora_alpha=inferred_alpha,
           )
           adapted_count += 1
           applied_count_by_adapter[idx] += 1
@@ -294,10 +285,7 @@ class LoRAPipeline(PipelineBase):
     t = time.perf_counter()
     for module_name, lora_layers_dict in target_modules:
       for layer in lora_layers_dict.values():
-        if layer.merged:
-          layer.unmerge_lora_weights()
-        if not layer.disable_lora:
-          layer.disable_lora = True
+        layer.deactivate()
 
       print(f"LoRA weights deactivated for module {module_name}")
 

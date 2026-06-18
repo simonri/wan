@@ -9,7 +9,7 @@ from wan.modules.wanvae import Wan2_1_VAE
 from wan.pipeline.base import PipelineBase
 from wan.pipeline.executor import BaseExecutor
 from wan.pipeline.lora_pipeline import LoRAPipeline
-from wan.platform import get_local_torch_device
+from wan.platform import CudaPlatform, get_local_torch_device
 from wan.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
 from wan.server_args import ServerArgs
 from wan.stages.decoding import DecodingStage
@@ -19,7 +19,7 @@ from wan.stages.input_validation import InputValidationStage
 from wan.stages.latent_preparation import LatentPreparationStage
 from wan.stages.text_encoding import LazyTextEncoder, TextEncodingStage
 from wan.stages.timestep_preparation import TimestepPreparationStage
-from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype, skip_init_modules
+from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype
 
 
 class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
@@ -69,20 +69,22 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
     # for 28GB checkpoints; the CPU-staged + in-place copy_ path is fastest empirically.
     transformer_dtype = PRECISION_TO_TYPE[pipeline_config.dit_precision]
     t0 = time.perf_counter()
-    with set_default_torch_dtype(transformer_dtype), skip_init_modules():
-      transformer = WanModel(
-        config=pipeline_config.dit_config, quant_config=pipeline_config.dit_config.quant_config
-      ).to(local_torch_device)
-    print(f"  Transformer construct+to(device): {time.perf_counter() - t0:.2f}s")
-    transformer.load("models/diffusion_models/Wan2_2-I2V-A14B-HIGH_fp8_e4m3fn_scaled_KJ.flashpack", server_args)
+    print(f"  Transformer construct (meta): avail mem before: {CudaPlatform.get_available_gpu_memory():.2f} GB")
+    with torch.device("meta"), set_default_torch_dtype(transformer_dtype):
+      transformer = WanModel(config=pipeline_config.dit_config)
+    print(f"  Transformer construct (meta): {time.perf_counter() - t0:.2f}s")
+    transformer.load(
+      "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.flashpack", server_args, device=local_torch_device
+    )
 
     t0 = time.perf_counter()
-    with set_default_torch_dtype(transformer_dtype), skip_init_modules():
-      transformer_2 = WanModel(
-        config=pipeline_config.dit_config, quant_config=pipeline_config.dit_config.quant_config
-      ).to(local_torch_device)
-    print(f"  Transformer_2 construct+to(device): {time.perf_counter() - t0:.2f}s")
-    transformer_2.load("models/diffusion_models/Wan2_2-I2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.flashpack", server_args)
+    print(f"  Transformer_2 construct (meta): avail mem before: {CudaPlatform.get_available_gpu_memory():.2f} GB")
+    with torch.device("meta"), set_default_torch_dtype(transformer_dtype):
+      transformer_2 = WanModel(config=pipeline_config.dit_config)
+    print(f"  Transformer_2 construct (meta): {time.perf_counter() - t0:.2f}s")
+    transformer_2.load(
+      "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.flashpack", server_args, device=local_torch_device
+    )
 
     print(f"== total load_modules: {time.perf_counter() - t_total:.2f}s ==")
 

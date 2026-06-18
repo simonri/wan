@@ -21,7 +21,7 @@ server_args = ServerArgs(pipeline_config=pipeline_config)
 transformer_dtype = PRECISION_TO_TYPE[pipeline_config.dit_precision]
 
 with set_default_torch_dtype(transformer_dtype), skip_init_modules():
-  transformer = WanModel(config=pipeline_config.dit_config, quant_config=pipeline_config.dit_config.quant_config)
+  transformer = WanModel(config=pipeline_config.dit_config)
 
 transformer.load(input_path, server_args)
 
