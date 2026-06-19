@@ -54,6 +54,7 @@ class ImageVAEEncodingStage(PipelineStage):
   def __init__(self, vae: Wan2_1_VAE, **kwargs):
     super().__init__()
     self.vae = vae
+    self._cache: dict[ImageVAEEncodingFingerprint, torch.Tensor] = {}
 
   def preprocess(
     self,
@@ -73,6 +74,14 @@ class ImageVAEEncodingStage(PipelineStage):
 
   def forward(self, batch: Req, server_args: ServerArgs) -> Req:
     if batch.condition_image is None:
+      return batch
+
+    if batch.image_latent is not None:
+      return batch
+
+    fingerprint = self.build_dedup_fingerprint(batch, server_args)
+    if fingerprint in self._cache:
+      batch.image_latent = self._cache[fingerprint].clone()
       return batch
 
     num_frames = batch.num_frames
@@ -135,6 +144,7 @@ class ImageVAEEncodingStage(PipelineStage):
       all_image_latents.append(image_latent)
 
     batch.image_latent = torch.cat(all_image_latents, dim=1)
+    self._cache[fingerprint] = batch.image_latent.clone()
 
     return batch
 

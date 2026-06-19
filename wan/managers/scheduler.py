@@ -106,6 +106,7 @@ class Scheduler:
       request_group = expand_request_outputs(msg.req, num_prompts=1)
       output_batches = self.pipeline.forward_batch(request_group, self.server_args)
       file_paths: list[str] = []
+      t_save = time.perf_counter()
       for ob_idx, ob in enumerate(output_batches):
         paths = save_outputs(
           outputs=ob.output,
@@ -120,6 +121,7 @@ class Scheduler:
           frame_interpolation_scale=msg.frame_interpolation_scale,
         )
         file_paths.extend(paths)
+      print(f"[scheduler] job {job_id}: save_outputs {time.perf_counter() - t_save:.2f}s")
 
       elapsed = time.perf_counter() - t0
       peak_mb = torch.cuda.max_memory_allocated() / (1024**2)

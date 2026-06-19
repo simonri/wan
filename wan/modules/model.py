@@ -321,7 +321,7 @@ class WanModel(ModelMixin, ConfigMixin):
       import flashpack
 
       t0 = time.perf_counter()
-      flashpack.assign_from_file(self, model_path, device=device)
+      flashpack.assign_from_file(self, model_path, device=device, silent=False)
       t_read = time.perf_counter() - t0
 
       print(f"  Transformer load: read={t_read:.2f}s")

@@ -45,6 +45,7 @@ class Req:
 
   # latent tensors
   latents: torch.Tensor | None = None
+  image_latent: torch.Tensor | None = None
 
   is_warmup: bool = False
 

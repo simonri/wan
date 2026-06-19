@@ -37,15 +37,14 @@ JOB_STORE: dict[str, VideoResponse] = {}
 
 
 def _build_sampling_params(vreq: VideoGenerationsRequest, output_path: str) -> Wan2_2_I2V_SamplingParam:
-  """Map the public request fields onto Wan2_2_I2V_SamplingParam defaults."""
   return Wan2_2_I2V_SamplingParam(
     prompt=vreq.prompt,
-    height=vreq.height if vreq.height is not None else 1280,
-    width=vreq.width if vreq.width is not None else 720,
-    num_frames=vreq.num_frames if vreq.num_frames is not None else 81,
-    num_inference_steps=vreq.num_inference_steps if vreq.num_inference_steps is not None else 8,
-    num_outputs_per_prompt=vreq.num_outputs_per_prompt or vreq.n or 1,
-    fps=vreq.fps if vreq.fps is not None else 16,
+    height=vreq.height,
+    width=vreq.width,
+    num_frames=vreq.num_frames,
+    num_inference_steps=vreq.num_inference_steps,
+    num_outputs_per_prompt=vreq.num_outputs_per_prompt,
+    fps=vreq.fps,
     seed=vreq.seed if vreq.seed is not None else 42,
     generator_device=vreq.generator_device,
     output_path=output_path,
