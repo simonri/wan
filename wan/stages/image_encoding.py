@@ -16,6 +16,7 @@ from wan.vision_utils import normalize, numpy_to_pt, pil_to_numpy
 @dataclass(frozen=True)
 class ImageVAEEncodingFingerprint:
   image_source: Any
+  end_image_source: Any
   height: int | None
   width: int | None
   num_frames: int | None
@@ -103,6 +104,23 @@ class ImageVAEEncodingStage(PipelineStage):
 
       if num_frames == 1:
         video_condition = image
+      elif batch.end_condition_image is not None:
+        end_image = self.preprocess(batch.end_condition_image).to(local_device, dtype=torch.float32)
+        end_image = end_image.unsqueeze(2)
+        video_condition = torch.cat(
+          [
+            image,
+            image.new_zeros(
+              image.shape[0],
+              image.shape[1],
+              num_frames - 2,
+              image.shape[3],
+              image.shape[4],
+            ),
+            end_image,
+          ],
+          dim=2,
+        )
       else:
         video_condition = torch.cat(
           [
@@ -152,8 +170,17 @@ class ImageVAEEncodingStage(PipelineStage):
     if batch.condition_image is None:
       return id(batch)
 
+    end_image_path = getattr(batch, "end_image_path", None)
+    if end_image_path is not None:
+      end_image_source = ("path", PipelineStage.freeze_for_dedup(end_image_path))
+    elif batch.end_condition_image is not None:
+      end_image_source = ("image", _freeze_image_source_value(batch.end_condition_image))
+    else:
+      end_image_source = None
+
     return ImageVAEEncodingFingerprint(
       image_source=_build_image_source_fingerprint(batch, prefer_vae_image=True),
+      end_image_source=end_image_source,
       height=batch.height,
       width=batch.width,
       num_frames=batch.num_frames,

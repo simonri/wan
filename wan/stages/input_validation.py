@@ -13,6 +13,7 @@ def load_image(
 ) -> PIL.Image.Image:
   image = PIL.Image.open(image)
   image = PIL.ImageOps.exif_transpose(image)
+  image = image.convert("RGB")
   return image
 
 
@@ -98,5 +99,11 @@ class InputValidationStage(PipelineStage):
       batch.original_condition_image_size = image.size
 
       self.preprocess_condition_image(batch, server_args, condition_image_width, condition_image_height)
+
+    end_image_path = getattr(batch, "end_image_path", None)
+    if end_image_path is not None:
+      end_image = load_image(end_image_path)
+      end_image = end_image.resize((batch.width, batch.height))
+      batch.end_condition_image = end_image
 
     return batch

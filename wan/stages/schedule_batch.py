@@ -22,6 +22,7 @@ class Req:
 
   original_condition_image_size: tuple[int, int] = None
   condition_image: torch.Tensor | PIL.Image.Image | None = None
+  end_condition_image: torch.Tensor | PIL.Image.Image | None = None
   vae_image: torch.Tensor | PIL.Image.Image | None = None
 
   # primary encoder embeddings

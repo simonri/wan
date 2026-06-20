@@ -31,6 +31,7 @@ class VideoResponse(BaseModel):
 class VideoGenerationsRequest(BaseModel):
   prompt: str
   input_reference: str | None = None
+  end_image: str | None = None
   num_outputs_per_prompt: int = 1
   fps: int = 16
   num_frames: int = 81
