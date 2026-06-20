@@ -75,7 +75,7 @@ def fa4_call(q, k, v, scale):
     return flash_attn_varlen_func_op(
         q=q, k=k, v=v, cu_seqlens_q=None, cu_seqlens_k=None,
         max_seqlen_q=q.shape[1], max_seqlen_k=k.shape[1],
-        softmax_scale=scale, causal=False, return_softmax_lse=False,
+        softmax_scale=scale, causal=False
     )
 
 

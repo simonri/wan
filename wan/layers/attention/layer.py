@@ -39,5 +39,4 @@ class WanAttention(nn.Module):
       max_seqlen_k=k.shape[1],
       softmax_scale=self.softmax_scale,
       causal=self.causal,
-      return_softmax_lse=False,
     )
