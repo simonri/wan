@@ -185,3 +185,47 @@ def interpolate_video_frames(
 ) -> tuple[list[np.ndarray], int]:
   rife = RIFE(ckpt_name="rife-4.25")
   return rife.interpolate(frames, exp=exp, scale=scale)
+
+
+def interpolate_video_tensor(
+  frames: torch.Tensor,
+  exp: int = 1,
+  scale: float = 1.0,
+  chunk: int = 32,
+) -> tuple[torch.Tensor, int]:
+  """GPU-resident batched interpolation: all adjacent pairs go through the flow
+  net in chunked batches, with no per-pair CPU round-trips.
+
+  Each 2x level midpoints the current sequence (timestep 0.5), which matches the
+  recursive per-pair scheme of `interpolate` level for level.
+
+  Args:
+    frames: [T, C, H, W] float tensor in [0, 1] (any device; computed on the
+      RIFE model's device and returned on the input device).
+    exp:    interpolation factor exponent, 1 -> 2x, 2 -> 4x.
+    scale:  RIFE inference scale.
+    chunk:  max pairs per flow-net batch (bounds activation memory).
+
+  Returns:
+    ([T', C, H, W] tensor, multiplier) with T' = (T-1)*2**exp + 1.
+  """
+  if frames.shape[0] < 2:
+    logging.warning("Frame interpolation requires at least 2 frames; returning input unchanged.")
+    return frames, 1
+
+  rife = RIFE(ckpt_name="rife-4.25")
+  model = rife._ensure_model_loaded()
+  device = model.device()
+
+  x = frames.to(device=device, dtype=torch.float32)
+  with torch.no_grad():
+    for _ in range(exp):
+      i0, i1 = x[:-1], x[1:]
+      mids = [model.inference(i0[s : s + chunk], i1[s : s + chunk], scale=scale) for s in range(0, i0.shape[0], chunk)]
+      mid = torch.cat(mids, dim=0)
+      out = x.new_empty((x.shape[0] * 2 - 1, *x.shape[1:]))
+      out[0::2] = x
+      out[1::2] = mid.clamp(0.0, 1.0)
+      x = out
+
+  return x.to(frames.device), 2**exp

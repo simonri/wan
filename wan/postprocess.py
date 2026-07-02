@@ -5,7 +5,7 @@ from typing import Any
 import imageio
 import torch
 
-from rife.rife import interpolate_video_frames
+from rife.rife import interpolate_video_frames, interpolate_video_tensor
 
 
 def post_process_sample(
@@ -18,24 +18,35 @@ def post_process_sample(
   enable_frame_interpolation: bool = False,
   frame_interpolation_exp: int = 1,
   frame_interpolation_scale: float = 1.0,
-):
-  frames = None
-
-  # 1. convert tensor to list of uin8 HWC frames
+) -> tuple[list, int]:
+  """Returns (uint8 HWC frames, effective fps after interpolation)."""
+  # 1./2. interpolation + uint8 conversion.
+  # On CUDA, interpolate the float frames on-GPU (batched pairs, no per-pair
+  # host round-trips) and do a single device->host copy at the end.
   if sample.dim() == 3:
     sample = sample.unsqueeze(1)
-  sample = (sample * 255).clamp(0, 255).to(torch.uint8)
-  videos = sample.permute(1, 2, 3, 0).cpu().numpy()
-  frames = list(videos)
 
-  # 2. frame interpolation
-  if enable_frame_interpolation and len(frames) > 1:
-    frames, multiplier = interpolate_video_frames(
-      frames,
+  if enable_frame_interpolation and sample.shape[1] > 1 and sample.is_cuda:
+    interpolated, multiplier = interpolate_video_tensor(
+      sample.permute(1, 0, 2, 3).float(),  # [T, C, H, W]
       exp=frame_interpolation_exp,
       scale=frame_interpolation_scale,
     )
     fps = fps * multiplier
+    videos = (interpolated.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
+    frames = list(videos)
+  else:
+    sample = (sample * 255).clamp(0, 255).to(torch.uint8)
+    videos = sample.permute(1, 2, 3, 0).cpu().numpy()
+    frames = list(videos)
+
+    if enable_frame_interpolation and len(frames) > 1:
+      frames, multiplier = interpolate_video_frames(
+        frames,
+        exp=frame_interpolation_exp,
+        scale=frame_interpolation_scale,
+      )
+      fps = fps * multiplier
 
   # 4. save outputs if requested
   if save_output:
@@ -67,7 +78,7 @@ def post_process_sample(
     else:
       print("No output path provided, skipping save.")
 
-  return frames
+  return frames, fps
 
 
 def save_outputs(
@@ -89,7 +100,7 @@ def save_outputs(
     save_file_path = build_output_path(idx)
     sample = output
 
-    frames = post_process_sample(
+    frames, _effective_fps = post_process_sample(
       sample,
       fps,
       save_output,
