@@ -1,3 +1,4 @@
+import threading
 import time
 
 import torch
@@ -20,6 +21,17 @@ from wan.stages.latent_preparation import LatentPreparationStage
 from wan.stages.text_encoding import LazyTextEncoder, TextEncodingStage
 from wan.stages.timestep_preparation import TimestepPreparationStage
 from wan.torch_utils import PRECISION_TO_TYPE, set_default_torch_dtype
+
+
+def _prefetch_file(path: str, chunk_bytes: int = 1 << 24) -> None:
+  """Sequentially read a file to pull it into the page cache (reads release the
+  GIL, so this overlaps with the main thread's model load)."""
+  try:
+    with open(path, "rb", buffering=0) as f:
+      while f.read(chunk_bytes):
+        pass
+  except OSError as e:
+    print(f"  prefetch {path} failed: {e}")
 
 
 class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
@@ -68,6 +80,14 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
     # Direct-to-GPU safetensors and post-load .to(device) were both significantly slower
     # for 28GB checkpoints; the CPU-staged + in-place copy_ path is fastest empirically.
     transformer_dtype = PRECISION_TO_TYPE[pipeline_config.dit_precision]
+
+    # Warm the page cache for transformer_2's file while transformer 1 loads —
+    # the disk (~300 MB/s virtio) is the bottleneck, so overlapping the two
+    # sequential 28 GB reads nearly halves cold-start load time.
+    low_noise_path = "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.flashpack"
+    prefetch_thread = threading.Thread(target=_prefetch_file, args=(low_noise_path,), daemon=True)
+    prefetch_thread.start()
+
     t0 = time.perf_counter()
     print(f"  Transformer construct (meta): avail mem before: {CudaPlatform.get_available_gpu_memory():.2f} GB")
     with torch.device("meta"), set_default_torch_dtype(transformer_dtype):
@@ -82,9 +102,8 @@ class WanImageToVideoPipeline(LoRAPipeline, PipelineBase):
     with torch.device("meta"), set_default_torch_dtype(transformer_dtype):
       transformer_2 = WanModel(config=pipeline_config.dit_config)
     print(f"  Transformer_2 construct (meta): {time.perf_counter() - t0:.2f}s")
-    transformer_2.load(
-      "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.flashpack", server_args, device=local_torch_device
-    )
+    prefetch_thread.join(timeout=600)
+    transformer_2.load(low_noise_path, server_args, device=local_torch_device)
 
     print(f"== total load_modules: {time.perf_counter() - t_total:.2f}s ==")
 
