@@ -23,6 +23,12 @@ class BatchGenerateReq:
   frame_interpolation_exp: int = 1
   frame_interpolation_scale: float = 1.0
   crf: int = 23
+  # Streaming: encode fMP4 in the worker and return the bytes directly,
+  # skipping the disk MP4 + remux + ffprobe round-trip on the HTTP side.
+  return_fmp4: bool = False
+  # Set False to skip writing the MP4 file entirely (streaming-only jobs).
+  save_file: bool = True
+  fmp4_preset: str = "veryfast"
 
 
 @dataclass
@@ -35,3 +41,7 @@ class BatchGenerateOutput:
   inference_time_s: float | None = None
   num_outputs: int | None = None
   peak_memory_mb: float | None = None
+  # Populated when the request set return_fmp4 (first output only).
+  fmp4_init: bytes | None = None
+  fmp4_media: bytes | None = None
+  duration_s: float | None = None

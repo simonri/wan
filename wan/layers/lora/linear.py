@@ -25,6 +25,46 @@ class LinearWithLoRA(nn.Module):
     # bumped whenever the effective weights change (adapters set/cleared/toggled)
     # so downstream activation caches keyed on this layer can invalidate
     self.weights_version: int = 0
+    # exact CPU copy of the base weight, taken before any merge; restore is a
+    # bitwise copy back, so merge/restore cycles never accumulate rounding drift
+    self._pristine_weight: torch.Tensor | None = None
+    self.is_merged: bool = False
+
+  @property
+  def has_runtime_lora(self) -> bool:
+    return bool(self.lora_weights_list) and not self._disable_lora
+
+  def snapshot_pristine(self) -> None:
+    """Copy the (unmerged) base weight to CPU once. Call at startup or any time
+    before the first merge; it is a no-op afterwards."""
+    if self._pristine_weight is None:
+      assert not self.is_merged, "cannot snapshot after a merge"
+      self._pristine_weight = self.base_layer.weight.detach().to("cpu", copy=True)
+
+  def merge_adapter(self, A: torch.Tensor, B: torch.Tensor, scale: float) -> None:
+    """Fold one adapter into the base weight: W += scale * B @ A (fp32 math,
+    single bf16 rounding). Requires a pristine snapshot for exact restore."""
+    self.snapshot_pristine()
+    w = self.base_layer.weight.data
+    delta = (B.detach().float() * scale) @ A.detach().float()
+    w.copy_((w.float() + delta).to(w.dtype))
+    self.is_merged = True
+    self.weights_version += 1
+
+  def restore_pristine(self) -> None:
+    """Bitwise-restore the base weight from the CPU snapshot."""
+    if not self.is_merged:
+      return
+    assert self._pristine_weight is not None
+    self.base_layer.weight.data.copy_(self._pristine_weight, non_blocking=True)
+    self.is_merged = False
+    self.weights_version += 1
+
+  def clear_runtime_lora(self) -> None:
+    """Drop the runtime adapter stack (merged weights are unaffected)."""
+    self.lora_weights_list.clear()
+    self._lora_cache = None
+    self.disable_lora = True
 
   @property
   def disable_lora(self) -> bool:
