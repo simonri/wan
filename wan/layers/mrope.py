@@ -141,6 +141,19 @@ class NDRotaryEmbedding(nn.Module):
     return self._forward_cached_from_grid(grid_size, start_frame, device)
 
   @functools.lru_cache(maxsize=16)
+  def cos_sin_cache_from_grid(
+    self,
+    grid_size: tuple[int, ...],
+    start_frame: int = 0,
+    device: torch.device | str | None = None,
+  ) -> torch.Tensor:
+    """[num_tokens, head_dim] fp32 cache (cos | sin) in the layout flashinfer's
+    apply_rope_with_cos_sin_cache expects, concatenated once per grid instead of
+    per transformer block."""
+    cos, sin = self._forward_cached_from_grid(grid_size, start_frame, device)
+    return torch.cat([cos, sin], dim=-1)
+
+  @functools.lru_cache(maxsize=16)
   def _forward_cached_from_grid(
     self,
     grid_size: tuple[int, ...],
