@@ -19,9 +19,22 @@ class LinearWithLoRA(nn.Module):
   def __init__(self, base_layer: nn.Linear):
     super().__init__()
     self.base_layer = base_layer
-    self.disable_lora: bool = True
+    self._disable_lora: bool = True
     self.lora_weights_list: list[LoRAWeightEntry] = []
-    self._lora_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None
+    self._lora_cache: tuple[torch.Tensor, torch.Tensor] | None = None
+    # bumped whenever the effective weights change (adapters set/cleared/toggled)
+    # so downstream activation caches keyed on this layer can invalidate
+    self.weights_version: int = 0
+
+  @property
+  def disable_lora(self) -> bool:
+    return self._disable_lora
+
+  @disable_lora.setter
+  def disable_lora(self, value: bool) -> None:
+    if value != self._disable_lora:
+      self.weights_version += 1
+    self._disable_lora = value
 
   @property
   def weight(self) -> torch.Tensor:
@@ -56,19 +69,25 @@ class LinearWithLoRA(nn.Module):
     )
     self.disable_lora = False
     self._lora_cache = None
+    self.weights_version += 1
 
   def deactivate(self) -> None:
     self.disable_lora = True
     self._lora_cache = None
 
   def _build_cache(self, dtype: torch.dtype) -> None:
-    cache = []
+    # Concatenate all adapters into a single (A, B) pair along the rank dim so the
+    # forward pays two skinny GEMMs total instead of two per adapter. Exact:
+    # B_cat @ (A_cat @ x) == sum_i B_i @ (A_i @ x), with the sum accumulated in
+    # fp32 inside one GEMM instead of rounded to bf16 per adapter.
+    a_list, b_list = [], []
     for lora_A, lora_B, _, lora_strength, lora_rank, lora_alpha in self.lora_weights_list:
       scale = lora_strength
       if lora_alpha is not None and lora_rank is not None and lora_alpha != lora_rank:
         scale *= lora_alpha / lora_rank
-      cache.append((lora_A.to(dtype=dtype), (lora_B * scale).to(dtype=dtype)))
-    self._lora_cache = cache
+      a_list.append(lora_A.to(dtype=dtype))
+      b_list.append((lora_B * scale).to(dtype=dtype))
+    self._lora_cache = (torch.cat(a_list, dim=0), torch.cat(b_list, dim=1))
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     result = self.base_layer(x)
@@ -79,9 +98,10 @@ class LinearWithLoRA(nn.Module):
     if self._lora_cache is None:
       self._build_cache(x.dtype)
 
-    for lora_A, scaled_lora_B in self._lora_cache:
-      result = result + F.linear(F.linear(x, lora_A), scaled_lora_B)
-
+    lora_A_cat, scaled_lora_B_cat = self._lora_cache
+    h = F.linear(x, lora_A_cat)
+    out_features = result.shape[-1]
+    result.view(-1, out_features).addmm_(h.view(-1, h.shape[-1]), scaled_lora_B_cat.t())
     return result
 
 
