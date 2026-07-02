@@ -3,6 +3,7 @@ import time
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin
 from diffusers.models.modeling_utils import ModelMixin
 
@@ -44,12 +45,36 @@ class WanCrossAttention(nn.Module):
       num_heads=num_heads, head_size=self.head_dim, dropout_rate=0, softmax_scale=None, causal=False
     )
 
-  def forward(self, x, context):
-    q = self.norm_q(self.to_q(x)).unflatten(2, (self.num_heads, self.head_dim))
+    # (key, k, v): the text context is constant across denoising steps, so K/V
+    # projections are computed once per context tensor. Keyed on tensor identity
+    # (the ref keeps the tensor alive, so the slot can never alias a different
+    # tensor at a reused address) plus the LoRA state of to_k/to_v, which are
+    # LoRA targets and can change between requests that share a context.
+    self._context_kv: tuple[tuple, torch.Tensor, torch.Tensor] | None = None
+
+  def _get_context_kv(self, context: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    key = (
+      context,
+      context._version,
+      getattr(self.to_k, "weights_version", None),
+      getattr(self.to_v, "weights_version", None),
+    )
+    cached = self._context_kv
+    if cached is not None and cached[0][0] is key[0] and cached[0][1:] == key[1:]:
+      return cached[1], cached[2]
     k = self.norm_k(self.to_k(context)).unflatten(2, (self.num_heads, self.head_dim))
     v = self.to_v(context).unflatten(2, (self.num_heads, self.head_dim))
+    self._context_kv = (key, k, v)
+    return k, v
 
-    x = self.attn(q, k, v).flatten(2)
+  def forward(self, x, context):
+    q = self.norm_q(self.to_q(x)).unflatten(2, (self.num_heads, self.head_dim))
+    k, v = self._get_context_kv(context)
+
+    # kv is short (text_len tokens): cuDNN SDPA is ~25% faster than FA4 here
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.CUDNN_ATTENTION):
+      attn_out = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
+    x = attn_out.transpose(1, 2).flatten(2)
     x = self.to_out(x)
     return x
 
@@ -94,6 +119,10 @@ class WanTransformerBlock(nn.Module):
 
     self.scale_shift_table = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
 
+    # lazily-created zeros for the ungated self-attn residual norm (kept out of
+    # the per-forward path; not a buffer so meta-device init stays value-free)
+    self._null_scale_shift: torch.Tensor | None = None
+
   def forward(
     self,
     hidden_states: torch.Tensor,
@@ -123,13 +152,18 @@ class WanTransformerBlock(nn.Module):
     key = self.norm_k(self.to_k(norm_hidden_states)).unflatten(2, (self.num_heads, self.head_dim))
     value = self.to_v(norm_hidden_states).unflatten(2, (self.num_heads, self.head_dim))
 
-    cos, sin = freqs_cis
-    cos_sin_cache = torch.cat([cos.contiguous(), sin.contiguous()], dim=-1)
-    query, key = apply_flashinfer_rope_qk_inplace(query, key, cos_sin_cache, is_neox=False)
+    cos_sin_cache, positions = freqs_cis
+    query, key = apply_flashinfer_rope_qk_inplace(query, key, cos_sin_cache, is_neox=False, positions=positions)
 
     attn_output = self.to_out(self.attn1(query, key, value).flatten(2))
 
-    null_shift = null_scale = torch.zeros((1,), device=hidden_states.device, dtype=hidden_states.dtype)
+    if (
+      self._null_scale_shift is None
+      or self._null_scale_shift.device != hidden_states.device
+      or self._null_scale_shift.dtype != hidden_states.dtype
+    ):
+      self._null_scale_shift = torch.zeros((1,), device=hidden_states.device, dtype=hidden_states.dtype)
+    null_shift = null_scale = self._null_scale_shift
     norm_hidden_states, hidden_states = self.self_attn_residual_norm(
       hidden_states, attn_output, gate_msa, null_shift, null_scale
     )
@@ -171,6 +205,23 @@ class WanTimeTextImageEmbedding(nn.Module):
       act_type="gelu_pytorch_tanh",
     )
 
+    # (input_ref, input_version, output): the prompt embedding is constant across
+    # denoising steps; embedding it once also keeps the returned tensor identity
+    # stable so downstream per-context caches (cross-attn K/V) can hit.
+    self._text_embed_cache: tuple[torch.Tensor, int, torch.Tensor] | None = None
+
+  def _embed_text(self, encoder_hidden_states_text: torch.Tensor) -> torch.Tensor:
+    cached = self._text_embed_cache
+    if (
+      cached is not None
+      and cached[0] is encoder_hidden_states_text
+      and cached[1] == encoder_hidden_states_text._version
+    ):
+      return cached[2]
+    out = self.text_embedder(encoder_hidden_states_text)
+    self._text_embed_cache = (encoder_hidden_states_text, encoder_hidden_states_text._version, out)
+    return out
+
   def forward(
     self,
     timestep: torch.Tensor,
@@ -180,7 +231,7 @@ class WanTimeTextImageEmbedding(nn.Module):
     temb = self.time_embedder(timestep, timestep_seq_len)
     timestep_proj = self.time_modulation(temb).unflatten(-1, (6, -1))
 
-    encoder_hidden_states_text = self.text_embedder(encoder_hidden_states_text)
+    encoder_hidden_states_text = self._embed_text(encoder_hidden_states_text)
 
     return temb, timestep_proj, encoder_hidden_states_text
 
@@ -267,7 +318,7 @@ class WanModel(ModelMixin, ConfigMixin):
     post_patch_height = height // p_h
     post_patch_width = width // p_w
 
-    freqs_cis = self.rotary_emb.forward_from_grid(
+    cos_sin_cache = self.rotary_emb.cos_sin_cache_from_grid(
       (post_patch_num_frames, post_patch_height, post_patch_width),
       start_frame=0,
       device=hidden_states.device,
@@ -275,6 +326,12 @@ class WanModel(ModelMixin, ConfigMixin):
 
     hidden_states = self.patch_embedding(hidden_states)
     hidden_states = hidden_states.flatten(2).transpose(1, 2)
+
+    seq_len = hidden_states.shape[1]
+    positions = torch.arange(seq_len, device=hidden_states.device, dtype=torch.long)
+    if batch_size > 1:
+      positions = positions.repeat(batch_size)
+    freqs_cis = (cos_sin_cache, positions)
 
     if timestep.dim() == 2:
       ts_seq_len = timestep.shape[1]

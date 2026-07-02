@@ -25,6 +25,7 @@ class DenoisingContext:
   num_inference_steps: int
   num_warmup_steps: int
   latents: torch.Tensor
+  prompt_embeds: torch.Tensor
   boundary_timestep: float | None
   z: torch.Tensor | None
   reserved_frames_masks: torch.Tensor | None
@@ -102,11 +103,16 @@ class DenoisingStage(PipelineStage):
     # note - guidance will be None if cfg is 1.0
     guidance = None
 
+    # convert once so every step passes the same tensor object to the model,
+    # letting the model's per-context caches (text embed, cross-attn K/V) hit
+    prompt_embeds = batch.prompt_embeds.to(target_dtype)
+
     return DenoisingContext(
       scheduler=scheduler,
       extra_step_kwargs={},
       timesteps=timesteps,
       latents=latents,
+      prompt_embeds=prompt_embeds,
       boundary_timestep=boundary_timestep,
       guidance=guidance,
       z=z_sp,
@@ -219,7 +225,7 @@ class DenoisingStage(PipelineStage):
       current_model=step.current_model,
       latent_model_input=latent_model_input,
       timestep=timestep,
-      encoder_hidden_states=batch.prompt_embeds.to(ctx.target_dtype),
+      encoder_hidden_states=ctx.prompt_embeds,
     )
 
     # 5. advance the scheduler state with the predicted noise
