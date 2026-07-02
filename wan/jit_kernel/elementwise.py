@@ -1,13 +1,5 @@
+import flashinfer.norm as _flashinfer_norm
 import torch
-
-from sgl_kernel.utils import is_arch_support_pdl
-
-try:
-  import flashinfer.norm as _flashinfer_norm
-
-  _has_flashinfer = True
-except ImportError:
-  _has_flashinfer = False
 
 _FLASHINFER_NORM_SUPPORTED_DTYPES = {torch.float16, torch.bfloat16}
 
@@ -17,11 +9,8 @@ def _fused_add_rmsnorm_internal(
   residual: torch.Tensor,
   weight: torch.Tensor,
   eps: float,
-  enable_pdl: bool | None,
 ) -> None:
-  if enable_pdl is None:
-    enable_pdl = is_arch_support_pdl()
-  torch.ops.sgl_kernel.fused_add_rmsnorm.default(input, residual, weight, eps, enable_pdl)
+  torch.ops.sgl_kernel.fused_add_rmsnorm.default(input, residual, weight, eps, enable_pdl=True)
 
 
 def fused_add_rmsnorm(
@@ -29,7 +18,6 @@ def fused_add_rmsnorm(
   residual: torch.Tensor,
   weight: torch.Tensor,
   eps: float = 1e-6,
-  enable_pdl: bool | None = None,
 ) -> None:
   r"""Fused add root mean square normalization.
 
@@ -49,15 +37,11 @@ def fused_add_rmsnorm(
       Weight tensor, shape (hidden_size,).
   eps: float
       Epsilon for numerical stability.
-  enable_pdl: Optional[bool]
-      Whether to enable `programmatic dependent launch
-      <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
-      If None, will be automatically enabled on Hopper architecture.
   """
-  if _has_flashinfer and input.dtype in _FLASHINFER_NORM_SUPPORTED_DTYPES and not torch.compiler.is_dynamo_compiling():
-    _flashinfer_norm.fused_add_rmsnorm(input, residual, weight, eps, enable_pdl)
+  if input.dtype in _FLASHINFER_NORM_SUPPORTED_DTYPES and not torch.compiler.is_dynamo_compiling():
+    _flashinfer_norm.fused_add_rmsnorm(input, residual, weight, eps, enable_pdl=True)
   else:
-    _fused_add_rmsnorm_internal(input, residual, weight, eps, enable_pdl)
+    _fused_add_rmsnorm_internal(input, residual, weight, eps)
 
 
 def _rmsnorm_internal(
@@ -65,13 +49,10 @@ def _rmsnorm_internal(
   weight: torch.Tensor,
   eps: float,
   out: torch.Tensor | None,
-  enable_pdl: bool | None,
 ) -> torch.Tensor:
   if out is None:
     out = torch.empty_like(input)
-  if enable_pdl is None:
-    enable_pdl = is_arch_support_pdl()
-  torch.ops.sgl_kernel.rmsnorm.default(out, input, weight, eps, enable_pdl)
+  torch.ops.sgl_kernel.rmsnorm.default(out, input, weight, eps, enable_pdl=True)
   return out
 
 
@@ -82,7 +63,6 @@ def rmsnorm(
   weight: torch.Tensor,
   eps: float = 1e-6,
   out: torch.Tensor | None = None,
-  enable_pdl: bool | None = None,
 ) -> torch.Tensor:
   r"""Root mean square normalization.
 
@@ -98,10 +78,6 @@ def rmsnorm(
       Epsilon for numerical stability.
   out: Optional[torch.Tensor]
       The output tensor, if specified, the kernel will update this tensor inplace.
-  enable_pdl: Optional[bool]
-      Whether to enable `programmatic dependent launch
-      <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
-      If None, will be automatically enabled on Hopper architecture.
 
   Returns
   -------
@@ -116,7 +92,7 @@ def rmsnorm(
   # FlashInfer, this check can be removed.
   # See: https://github.com/flashinfer-ai/flashinfer/issues/2734
   #      https://github.com/flashinfer-ai/flashinfer/pull/2733
-  if _has_flashinfer and input.dtype in _FLASHINFER_NORM_SUPPORTED_DTYPES and not torch.compiler.is_dynamo_compiling():
-    return _flashinfer_norm.rmsnorm(input, weight, eps, out, enable_pdl)
+  if input.dtype in _FLASHINFER_NORM_SUPPORTED_DTYPES and not torch.compiler.is_dynamo_compiling():
+    return _flashinfer_norm.rmsnorm(input, weight, eps, out, enable_pdl=True)
   else:
-    return _rmsnorm_internal(input, weight, eps, out, enable_pdl)
+    return _rmsnorm_internal(input, weight, eps, out)

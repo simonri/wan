@@ -92,6 +92,7 @@ async def create_video(request: Request) -> VideoResponse:
   req = Req(sampling_params=sampling_params)
   req.prompt = vreq.prompt
   req.image_path = vreq.input_reference
+  req.end_image_path = vreq.end_image
 
   msg = BatchGenerateReq(
     job_id=job_id,
